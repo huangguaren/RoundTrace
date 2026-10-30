@@ -544,16 +544,54 @@ private fun SeatLayoutStep(
         ) {
             val canvasW = maxWidth
             val canvasH = maxHeight
-            val cellSize = 88.dp
+            val cols = 4
+            val rows = 4
+            val padding = 16f
+            val gap = 12f
+            val cellW = (canvasW.value - padding * 2 - gap * (cols - 1)) / cols
+            val cellH = (canvasH.value - padding * 2 - gap * (rows - 1)) / rows
+            val cellSize = androidx.compose.ui.unit.Dp(cellW.coerceAtMost(cellH))
+
+            // 画 4x4 网格背景
+            for (r in 0 until rows) {
+                for (c in 0 until cols) {
+                    androidx.compose.foundation.Canvas(modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                x = (padding + c * (cellW + gap)).dp.roundToPx(),
+                                y = (padding + r * (cellH + gap)).dp.roundToPx()
+                            )
+                        }
+                        .size(androidx.compose.ui.unit.Dp(cellW), androidx.compose.ui.unit.Dp(cellH))
+                    ) {
+                        drawRoundRect(
+                            color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.3f),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx(), 12.dp.toPx())
+                        )
+                    }
+                }
+            }
+
+            fun snapToGrid(x: Float, y: Float): Pair<Float, Float> {
+                val col = ((x - padding + gap / 2) / (cellW + gap)).toInt().coerceIn(0, cols - 1)
+                val row = ((y - padding + gap / 2) / (cellH + gap)).toInt().coerceIn(0, rows - 1)
+                val sx = padding + col * (cellW + gap)
+                val sy = padding + row * (cellH + gap)
+                return Pair(sx, sy)
+            }
 
             (1..playerCount).forEach { seat ->
-                val defaultPos = defaultGridPosition(seat, playerCount, canvasW, canvasH, cellSize)
                 val saved = seatPositions[seat]
+                // 从归一化坐标恢复格子位置：saved.first = col/(cols-1), saved.second = row/(rows-1)
+                val initCol = saved?.let { (it.first * (cols - 1)).toInt().coerceIn(0, cols - 1) }
+                    ?: ((seat - 1) % cols)
+                val initRow = saved?.let { (it.second * (rows - 1)).toInt().coerceIn(0, rows - 1) }
+                    ?: ((seat - 1) / cols)
                 var offsetX by remember(seat, saved) {
-                    mutableStateOf(saved?.let { it.first * canvasW.value } ?: defaultPos.x)
+                    mutableStateOf(padding + initCol * (cellW + gap))
                 }
                 var offsetY by remember(seat, saved) {
-                    mutableStateOf(saved?.let { it.second * canvasH.value } ?: defaultPos.y)
+                    mutableStateOf(padding + initRow * (cellH + gap))
                 }
                 val avatarUri = seatAvatars[seat]
 
@@ -568,19 +606,20 @@ private fun SeatLayoutStep(
                         .size(cellSize)
                         .clip(MaterialTheme.shapes.medium)
                         .background(MaterialTheme.colorScheme.primaryContainer)
-                        .pointerInput(seat, canvasW, canvasH) {
+                        .pointerInput(seat, canvasW, canvasH, cellW, cellH) {
                             detectDragGestures(
                                 onDragEnd = {
-                                    onSeatPositionChange(
-                                        seat,
-                                        (offsetX / canvasW.value).coerceIn(0f, 1f),
-                                        (offsetY / canvasH.value).coerceIn(0f, 1f)
-                                    )
+                                    val (sx, sy) = snapToGrid(offsetX, offsetY)
+                                    offsetX = sx
+                                    offsetY = sy
+                                    val col = ((sx - padding) / (cellW + gap)).toInt()
+                                    val row = ((sy - padding) / (cellH + gap)).toInt()
+                                    onSeatPositionChange(seat, col / (cols - 1).toFloat(), row / (rows - 1).toFloat())
                                 }
                             ) { change, drag ->
                                 change.consume()
-                                offsetX = (offsetX + drag.x).coerceIn(0f, canvasW.value - cellSize.value)
-                                offsetY = (offsetY + drag.y).coerceIn(0f, canvasH.value - cellSize.value)
+                                offsetX = (offsetX + drag.x).coerceIn(padding, canvasW.value - padding - cellW)
+                                offsetY = (offsetY + drag.y).coerceIn(padding, canvasH.value - padding - cellH)
                             }
                         }
                         .clickable {
