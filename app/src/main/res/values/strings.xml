@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 全部中文 UI 文案集中在此（D6：领域层不拼 UI 文案） -->
+<resources>
+
+    <string name="app_name">鸭头</string>
+
+    <!-- 底部导航 -->
+    <string name="tab_home">首页</string>
+    <string name="tab_record">记录</string>
+    <string name="tab_review">复盘</string>
+    <string name="tab_home_desc">首页标签，查看全部对局</string>
+    <string name="tab_record_desc">记录标签，现场录入对局</string>
+    <string name="tab_review_desc">复盘标签，查看视角分析</string>
+
+    <!-- 首页 -->
+    <string name="home_title">首页</string>
+    <string name="home_empty_title">还没有对局记录</string>
+    <string name="home_empty_desc">开始记录你的第一局阿瓦隆</string>
+    <string name="home_empty_action">开始一局</string>
+
+    <!-- 记录 Tab 空态 -->
+    <string name="records_empty_title">还没有进行中的对局</string>
+    <string name="records_empty_desc">创建一局后即可在现场记录提案、投票与任务结果</string>
+    <string name="records_empty_action">开始一局</string>
+    <string name="records_title">记录</string>
+
+    <!-- 复盘 Tab 空态（DESIGN_SPEC §5 逐字） -->
+    <string name="review_empty_title">暂无可用分析</string>
+    <string name="review_empty_desc">需要至少一条已确认的任务记录</string>
+    <string name="review_empty_action">返回记录</string>
+    <string name="review_title">复盘</string>
+
+    <!-- 通用状态 -->
+    <string name="state_loading">正在加载…</string>
+    <string name="state_error_title">加载失败</string>
+    <string name="state_retry">重试</string>
+    <string name="unrecorded_placeholder">—— 未记录</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_confirm">确定</string>
+    <string name="action_save">保存</string>
+    <string name="action_next">下一步</string>
+    <string name="action_back">上一步</string>
+    <string name="action_close">关闭</string>
+    <string name="action_delete">删除</string>
+    <string name="action_rename">重命名</string>
+    <string name="action_clear_selection">清除选择</string>
+
+    <!-- 状态徽标四态 -->
+    <string name="badge_success">成功</string>
+    <string name="badge_failure">失败</string>
+    <string name="badge_unknown">未知</string>
+    <string name="badge_pending">待处理</string>
+
+    <!-- 首页筛选 -->
+    <string name="filter_all">全部</string>
+    <string name="filter_in_progress">进行中</string>
+    <string name="filter_finished">已结束</string>
+
+    <!-- 对局卡片 -->
+    <string name="card_meta_line">%1$d 人局 · %2$s</string>
+    <string name="card_more_actions">更多操作</string>
+    <string name="card_action_detail">查看详情</string>
+    <string name="card_action_rename">重命名对局</string>
+    <string name="card_action_export">导出对局</string>
+    <string name="card_action_delete">删除对局</string>
+    <string name="card_rename_title">重命名对局</string>
+    <string name="card_rename_label">对局标题</string>
+    <string name="card_delete_title">删除这局对局？</string>
+    <string name="card_delete_message">删除后该对局的全部事件、角色与草稿都会一并消失，且无法恢复。</string>
+    <string name="card_export_hint">导出功能将在数据交换功能上线后可用；当前先进入对局详情。</string>
+    <string name="card_time_just_now">刚刚</string>
+    <string name="card_time_minutes_ago">%1$d 分钟前</string>
+    <string name="card_time_hours_ago">%1$d 小时前</string>
+    <string name="card_time_days_ago">%1$d 天前</string>
+    <string name="card_quest_progress">已开始 %1$d 个任务</string>
+
+    <!-- 任务进度条 -->
+    <string name="quest_stepper_current">第 %1$d 任务</string>
+
+    <!-- 创建对局 -->
+    <string name="create_title">创建对局</string>
+    <string name="create_step_player_count">人数</string>
+    <string name="create_step_roles">角色构成</string>
+    <string name="create_step_seat_layout">座位布置</string>
+    <string name="create_step_my_seat">我的座位</string>
+    <string name="create_step_leader">首任队长</string>
+    <string name="create_step_title">对局标题</string>
+    <string name="create_player_count_label">%1$d 人局</string>
+    <string name="create_role_summary">好人 %1$d · 坏人 %2$d · 合计 %3$d</string>
+    <string name="create_role_total_mismatch">角色总数 %1$d 与人数 %2$d 不一致</string>
+    <string name="create_seat_optional_hint">可以不填，事后再补</string>
+    <string name="create_seat_layout_hint">拖拽座位块调整位置，点击可编辑名字或头像</string>
+    <string name="create_seat_name_title">%1$d 号座位名字</string>
+    <string name="create_seat_pick_avatar">选择头像</string>
+    <string name="create_seat_clear_avatar">移除头像</string>
+    <string name="create_title_label">给这局起个名字（留空自动生成）</string>
+    <string name="create_submit">创建对局</string>
+    <string name="create_error_title">无法创建对局</string>
+    <string name="create_saving">正在创建…</string>
+    <string name="create_issue_prefix">问题：</string>
+
+    <!-- 座位选择 -->
+    <string name="seat_picker_desc_unselected">%1$d 号座位，当前未选中</string>
+    <string name="seat_picker_desc_selected">%1$d 号座位，已选中</string>
+    <string name="seat_picker_desc_selected_role">%1$d 号座位，已选中，%2$s</string>
+    <string name="seat_role_leader">队长</string>
+    <string name="seat_role_me">我</string>
+
+    <!-- 记录页 -->
+    <string name="record_title">现场记录</string>
+    <string name="record_loading">正在加载对局…</string>
+    <string name="record_not_found">对局不存在或已被删除</string>
+    <string name="record_quest_header">第 %1$d 任务 · 需要 %2$d 人 · 失败牌门槛 %3$d</string>
+    <string name="record_leader_label">队长：%1$d 号</string>
+    <string name="record_leader_unset">队长未选择</string>
+    <string name="record_team_label">队伍：%1$s</string>
+    <string name="record_team_empty">尚未选择队员</string>
+    <string name="record_team_count">已选 %1$d / %2$d 人</string>
+    <string name="record_action_start_quest">开始第 %1$d 任务</string>
+    <string name="record_action_propose">记录组队提案</string>
+    <string name="record_action_vote">记录组队投票</string>
+    <string name="record_action_mission">记录任务牌</string>
+    <string name="record_action_undo">撤销上一步</string>
+    <string name="record_undo_done">已撤销上一步</string>
+    <string name="record_undo_failed">撤销失败：%1$s</string>
+    <string name="record_undo_failed_short">撤销失败，请重试</string>
+    <string name="record_undo_empty">没有可撤销的记录</string>
+    <string name="record_proposal_count">第 %1$d 次提案</string>
+    <string name="record_phase_label">当前阶段：%1$s</string>
+    <string name="record_quest_started">本任务已开始</string>
+    <string name="record_quest_not_started">本任务尚未开始（可先提交提案，系统会自动补建任务节点）</string>
+
+    <!-- 保存状态 -->
+    <string name="save_status_saved">已保存</string>
+    <string name="save_status_saving">保存中…</string>
+    <string name="save_status_failed">保存失败</string>
+    <string name="save_status_retry">重试</string>
+
+    <!-- 提案录入 -->
+    <string name="proposal_sheet_title">第 %1$d 任务 · 组队提案</string>
+    <string name="proposal_sheet_leader_section">选择队长</string>
+    <string name="proposal_sheet_team_section">选择上车队员</string>
+    <string name="proposal_sheet_submit">提交提案</string>
+    <string name="proposal_sheet_save_draft">仅暂存</string>
+    <string name="proposal_sheet_draft_saved">已暂存，尚未写入对局</string>
+    <string name="proposal_sheet_blocked">当前队伍不合法，无法提交</string>
+
+    <!-- 投票录入 -->
+    <string name="vote_sheet_title">第 %1$d 任务 · 第 %2$d 次提案 · 组队投票</string>
+    <string name="vote_section_title">组队投票（不是任务牌）</string>
+    <string name="vote_mode_per_seat">逐人</string>
+    <string name="vote_mode_summary">汇总</string>
+    <string name="vote_choice_approve">同意</string>
+    <string name="vote_choice_reject">反对</string>
+    <string name="vote_choice_unknown">未知</string>
+    <string name="vote_summary_approve">赞成 %1$d</string>
+    <string name="vote_summary_reject">反对 %1$d</string>
+    <string name="vote_summary_unknown">未知 %1$d</string>
+    <string name="vote_half_line">赞成 %1$d / 半数 %2$d</string>
+    <string name="vote_result_approved">赞成 %1$d &gt; 半数 %2$d → 通过</string>
+    <string name="vote_result_rejected">赞成 %1$d ≤ 半数 %2$d → 否决</string>
+    <string name="vote_result_tie">平票视为否决</string>
+    <string name="vote_result_unknown">票数不足，结果待定</string>
+    <string name="vote_exceeds_players">赞成 + 反对 = %1$d，超过人数 %2$d</string>
+    <string name="vote_decision_label">组队决议</string>
+    <string name="vote_decision_approved">通过</string>
+    <string name="vote_decision_rejected">否决</string>
+    <string name="vote_save">保存投票</string>
+    <string name="vote_decide">记录决议</string>
+
+    <!-- 任务结果 -->
+    <string name="mission_sheet_title">第 %1$d 任务 · 任务牌（不是投票）</string>
+    <string name="mission_section_title">任务牌（不是投票）</string>
+    <string name="mission_fail_count_label">失败牌数</string>
+    <string name="mission_fail_count_unknown">未知</string>
+    <string name="mission_rule_line">第 %1$d 任务需 ≥%2$d 张失败牌 → 本任务%3$s</string>
+    <string name="mission_rule_success">成功</string>
+    <string name="mission_rule_failed">失败</string>
+    <string name="mission_rule_unknown">结果未知</string>
+    <string name="mission_observed_label">你看到的任务结果</string>
+    <string name="mission_save">保存任务结果</string>
+    <string name="mission_note_vote_is_not_fail">仅记录公开的失败牌数，无法据此推断谁出了失败牌。</string>
+
+    <!-- 时间线 -->
+    <string name="timeline_title">时间线</string>
+    <string name="timeline_empty_title">暂无事件</string>
+    <string name="timeline_empty_desc">记录提案、投票或发言后会显示在这里</string>
+    <string name="timeline_unrecorded">—— 未记录</string>
+
+    <!-- 预案/占位（不是可点入口） -->
+    <string name="not_available_yet">该功能尚未开放</string>
+
+    <!-- 规则问题文案（D6：由 core/ui/IssueText.kt 映射） -->
+    <string name="issue_player_count_out_of_range">人数需在 %1$s–%2$s 之间，当前 %3$s 人</string>
+    <string name="issue_role_count_mismatch">角色总数应为 %1$s，当前为 %2$s</string>
+    <string name="issue_alignment_count_mismatch">阵营人数应为 好人 %1$s / 坏人 %2$s，当前为 好人 %3$s / 坏人 %4$s</string>
+    <string name="issue_role_uniqueness_violated">%1$s 的数量为 %2$s，超出允许值</string>
+    <string name="issue_role_slot_negative">角色数量不能为负数：%1$s</string>
+    <string name="issue_leader_seat_invalid">首任队长座位 %1$s 无效（应在 1–%2$s）</string>
+    <string name="issue_my_seat_invalid">我的座位 %1$s 无效（应在 1–%2$s）</string>
+    <string name="issue_team_size_mismatch">队伍人数应为 %1$s 人，当前 %2$s 人</string>
+    <string name="issue_duplicate_seat">存在重复座位：%1$s</string>
+    <string name="issue_seat_out_of_range">座位号超出范围：%1$s</string>
+    <string name="issue_proposal_no_out_of_order">提案序号 %1$s 与当前进度 %2$s 不一致</string>
+    <string name="issue_proposal_after_resolved">当前阶段不接受新的提案</string>
+    <string name="issue_vote_count_exceeds_players">赞成 %1$s + 反对 %2$s 超过人数 %3$s</string>
+    <string name="issue_vote_sum_mismatch">逐人票与汇总票不一致</string>
+    <string name="issue_decision_vote_conflict">记录的决议（%1$s）与票数推导（%2$s）冲突</string>
+    <string name="issue_vote_decision_undecidable">票数不足以判定组队结果</string>
+    <string name="issue_mission_without_approved_proposal">没有已通过的组队提案，不能记录任务结果</string>
+    <string name="issue_fail_count_exceeds_team">失败牌 %1$s 张超过队伍人数 %2$s</string>
+    <string name="issue_fail_count_outcome_conflict">按失败牌推导为 %1$s，与记录的结果 %2$s 冲突</string>
+    <string name="issue_mission_team_mismatch">任务队伍与已通过提案不一致：提案 %1$s / 实际 %2$s</string>
+    <string name="issue_mission_already_resolved">该任务已结算</string>
+    <string name="issue_leader_not_expected">队长应为 %1$s 号，记录为 %2$s 号</string>
+    <string name="issue_rejection_streak_exceeded">已连续否决 %1$s 次</string>
+    <string name="issue_assassination_not_allowed">当前阶段不能记录刺杀</string>
+    <string name="issue_unknown_role_for_outcome">目标 %1$s 号角色未知，无法判定刺杀结果</string>
+    <string name="issue_finalized_conflict">填写的终局结果与规则推导不一致</string>
+    <string name="issue_quest_out_of_order">任务序号 %1$s 与当前进度不一致</string>
+    <string name="issue_event_after_match_finished">对局已结束，该记录仅作补录</string>
+    <string name="issue_data_incomplete">数据不完整，结论暂不可用</string>
+
+    <!-- 角色名 -->
+    <string name="role_merlin">梅林</string>
+    <string name="role_percival">派西维尔</string>
+    <string name="role_loyal_servant">忠臣</string>
+    <string name="role_morgana">莫甘娜</string>
+    <string name="role_assassin">刺客</string>
+    <string name="role_mordred">莫德雷德</string>
+    <string name="role_minion">爪牙</string>
+    <string name="role_oberon">奥伯伦</string>
+
+    <!-- 提案卡片 -->
+    <string name="seat_number">%1$d 号</string>
+    <string name="unrecorded_short">未记录</string>
+    <string name="proposal_card_summary">第 %1$d 任务 · 第 %2$d 次提案 · 队长 %3$d 号</string>
+    <string name="proposal_vote_counts">赞成 %1$s / 反对 %2$s</string>
+    <string name="proposal_fail_count_line">失败牌 %1$s 张</string>
+    <string name="proposal_unverified">未核实</string>
+
+    <!-- 投票录入补充 -->
+    <string name="vote_seat_description">%1$d 号座位，当前记录为%2$s</string>
+
+    <!-- 视角切换 -->
+    <string name="perspective_public">公开</string>
+    <string name="perspective_observer">当时</string>
+    <string name="perspective_god">上帝</string>
+    <string name="perspective_god_blocked">对局结束后可查看</string>
+    <string name="perspective_current_line">当前视角：%1$s，截至第 %2$d 个事件</string>
+    <string name="perspective_current_public">公开视角（不含任何人私有信息）</string>
+    <string name="perspective_current_observer">%1$d 号 %2$s</string>
+    <string name="perspective_current_god">上帝视角（含真实身份）</string>
+    <string name="perspective_reconstructed_banner">该角色是结局后补录的，以下是**按规则重建的初始信息**，不是本人当时真的知道的内容</string>
+    <string name="perspective_god_banner">上帝视角：可以看到真实身份与全部私有信息</string>
+
+    <!-- 证据 -->
+    <string name="evidence_level_rule_certain">规则确定</string>
+    <string name="evidence_level_observer_certain">本人可知</string>
+    <string name="evidence_level_inference">推测</string>
+    <string name="evidence_level_unknown">信息不足</string>
+    <string name="evidence_source_ids">证据事件</string>
+    <string name="evidence_source_count">证据事件 %1$d 条</string>
+    <string name="evidence_no_direct_source">无直接证据（仅为一般建议）</string>
+    <string name="evidence_related_seats">涉及座位</string>
+    <string name="evidence_empty_title">暂无可用分析</string>
+    <string name="evidence_empty_desc">需要至少一条已确认的任务记录</string>
+    <string name="evidence_section_title">证据与结论</string>
+
+    <!-- 规则依据名（对应 AvalonEvidenceAnalyzer.RULE_A01..RULE_A12，R6：不把内部 code 上屏） -->
+    <string name="rule_a01">队伍人数</string>
+    <string name="rule_a02">投票未通过</string>
+    <string name="rule_a03">失败牌达到阈值</string>
+    <string name="rule_a04">任务成功不能洗白队员</string>
+    <string name="rule_a05">队伍含坏人</string>
+    <string name="rule_a06">失败牌数暗示队内有坏人</string>
+    <string name="rule_a07">无法定位出失败牌的人</string>
+    <string name="rule_a08">声称不等于事实</string>
+    <string name="rule_a09">队长顺序</string>
+    <string name="rule_a10">连续否决次数</string>
+    <string name="rule_a11">夜间已知坏人</string>
+    <string name="rule_a12">数据不完整</string>
+    <string name="rule_unknown">其他规则依据</string>
+
+    <!-- 时间线补充 -->
+    <string name="timeline_source_events">来源事件</string>
+    <string name="timeline_occurred_order">发生顺序</string>
+
+    <!-- 发言录入 -->
+    <string name="claim_title">记录发言</string>
+    <string name="claim_pick_tag">选择标签</string>
+    <string name="claim_pick_speaker">谁在说</string>
+    <string name="claim_pick_target">指向谁（可选）</string>
+    <string name="claim_claimed_role">声称的身份（仅「跳身份」需要）</string>
+    <string name="claim_note_optional">补充说明（可选）</string>
+    <string name="claim_save">保存发言</string>
+    <string name="claim_private_mode">记为私人笔记（仅自己可见）</string>
+    <string name="claim_is_not_fact">「跳身份」只记录为声称，不会修改任何人的真实身份</string>
+    <string name="claim_saved">已记录</string>
+    <string name="claim_tag_suspect">怀疑</string>
+    <string name="claim_tag_protect">保护</string>
+    <string name="claim_tag_role">跳身份</string>
+    <string name="claim_tag_counter">对跳</string>
+    <string name="claim_tag_team">推荐组队</string>
+    <string name="claim_tag_stance">改站边</string>
+    <string name="claim_tag_key">关键言论</string>
+    <string name="claim_tag_other">其他</string>
+    <string name="claim_belief_suspect">怀疑</string>
+    <string name="claim_belief_trust">信任</string>
+    <string name="claim_belief_role">身份猜测</string>
+    <string name="claim_belief_other">其他</string>
+    <string name="claim_claimed_prefix">声称</string>
+
+    <!-- 揭晓 -->
+    <string name="reveal_title">结局揭晓</string>
+    <string name="reveal_seat_role">%1$d 号角色</string>
+    <string name="reveal_role_unknown">仍未知</string>
+    <string name="reveal_action">揭晓全部身份</string>
+    <string name="reveal_done">身份已揭晓</string>
+    <string name="reveal_winner_label">获胜方</string>
+    <string name="reveal_reason_label">获胜原因</string>
+    <string name="reveal_assassin_label">刺客</string>
+    <string name="reveal_target_label">刺杀目标</string>
+    <string name="reveal_assassination_hint">三次任务成功只是进入刺杀阶段，**不能直接认定好人获胜**</string>
+    <string name="reveal_save_assassination">记录刺杀结果</string>
+    <string name="reveal_insufficient">角色不完整：高级结论区显示「信息不足」</string>
+    <string name="reveal_saved">已保存</string>
+
+    <!-- 复盘 -->
+    <string name="replay_title">复盘</string>
+    <string name="replay_select_quest">选择任务</string>
+    <string name="replay_select_event">选择事件位置</string>
+    <string name="replay_at_end">最新</string>
+    <string name="replay_unknowns_title">信息不足</string>
+    <string name="replay_private_title">你的私有信息</string>
+    <string name="replay_beliefs_title">你的主观判断（不是事实）</string>
+    <string name="replay_public_facts_title">公开事实</string>
+    <string name="replay_no_findings">暂无可用分析</string>
+
+    <!-- 设置页 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_theme_title">主题</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_privacy_title">隐私</string>
+    <string name="settings_include_private_label">导出时默认包含私有信息</string>
+    <string name="settings_include_private_hint">关闭时导出会隐去未揭晓的真实身份与私人笔记</string>
+    <string name="settings_default_preset_title">默认规则预设</string>
+    <string name="settings_default_preset_value">当前预设：%1$s</string>
+    <string name="settings_data_title">数据与关于</string>
+    <string name="settings_import_action">导入对局（JSON）</string>
+    <string name="settings_about_line">局迹 v%1$s</string>
+    <string name="settings_about_ruleset">规则集 %1$s v%2$d</string>
+    <string name="settings_about_privacy">本应用完全离线运行，不联网、不收集任何数据。</string>
+    <string name="settings_open_action">打开设置</string>
+
+    <!-- 对局详情页 -->
+    <string name="detail_title">对局详情</string>
+    <string name="detail_meta_line">%1$d 人局 · %2$d 条事件</string>
+    <string name="detail_revealed">身份已揭晓</string>
+    <string name="detail_not_revealed">身份尚未揭晓（导出默认不含真实身份）</string>
+    <string name="detail_export_title">导出与分享</string>
+    <string name="detail_include_secrets">包含真实身份</string>
+    <string name="detail_include_secrets_hint">仅在身份已揭晓时可开启</string>
+    <string name="detail_include_private">包含私人笔记</string>
+    <string name="detail_include_private_hint">私人笔记只属于记录者本人</string>
+    <string name="detail_share_json">分享 JSON</string>
+    <string name="detail_share_markdown">分享 Markdown</string>
+    <string name="detail_share_confirm_title">确认导出范围</string>
+    <string name="detail_share_confirm_action">继续分享</string>
+    <string name="detail_scope_include_prefix">将包含：</string>
+    <string name="detail_scope_exclude_prefix">不含：</string>
+    <string name="detail_scope_public_events">公开事件</string>
+    <string name="detail_scope_secrets">真实身份</string>
+    <string name="detail_scope_private_notes">私人笔记</string>
+    <string name="detail_msg_renamed">已重命名</string>
+    <string name="detail_msg_deleted">已删除该对局</string>
+    <string name="detail_msg_exported">已生成 %1$s</string>
+    <string name="detail_msg_export_failed">导出失败，请重试</string>
+    <string name="detail_msg_imported">已导入：%1$d 人局 · %2$d 条事件</string>
+    <string name="detail_msg_import_rejected">导入被拒绝：%1$s</string>
+
+</resources>

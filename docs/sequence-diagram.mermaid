@@ -1,0 +1,186 @@
+%% RoundTrace 关键流程时序图（4 张）
+%% 参与类均来自 docs/class-diagram.mermaid
+
+%% ============ 1. 创建对局并落库 ============
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant CS as CreateMatchScreen
+    participant CVM as CreateMatchViewModel
+    participant R as AvalonRules
+    participant REG as GameRulesRegistry
+    participant REPO as MatchRepository
+    participant DB as RoomDatabase
+
+    U->>CS: 选人数(8) / 角色构成 / 我的座位 / 首任队长
+    CS->>CVM: onAction(SetPlayerCount/SetRoleSlot/SetMySeat/SetLeader)
+    CVM->>REG: rulesFor("avalon.standard", 1)
+    REG-->>CVM: AvalonRules
+    CVM->>R: validateSetup(GameConfig)
+    R-->>CVM: List<RuleIssue>  (空或 WARNING)
+    CVM-->>CS: CreateMatchUiState(issues, canCreate)
+    U->>CS: 点击「创建对局」
+    CS->>CVM: onAction(ConfirmCreate)
+    CVM->>REPO: createMatch(MatchCreationDraft)
+    REPO->>DB: [事务] insert matches + participants + role_assignments(UNKNOWN/KNOWN_TO_SELF)
+    DB-->>REPO: matchId
+    REPO-->>CVM: MatchId
+    CVM-->>CS: 导航到 Record(matchId)
+    Note over CVM,DB: 若首任队长已确定，可在同一事务内补一条 QUEST_STARTED(questNo=1)<br/>或延迟到首次提交提案时自动补建（见 ARCHITECTURE §9.3-18）
+
+%% ============ 2. 一次「提案 -> 投票 -> 任务结果」闭环 ============
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant RS as RecordScreen
+    participant VM as RecordViewModel
+    participant F as EventFactory
+    participant REPO as MatchRepository
+    participant DAO as MatchEventDao
+    participant ENG as ReplayEngine
+    participant R as AvalonRules
+
+    U->>RS: 选队长 + 点选 4 名队员
+    RS->>VM: onAction(SelectLeader / ToggleTeamSeat)
+    VM->>VM: 更新 ProposalDraft
+    VM->>REPO: saveDraft(matchId, "RECORD_PROPOSAL", json)  (防抖 300ms)
+    U->>RS: 点「提交提案」
+    RS->>VM: onAction(ConfirmProposal)
+    VM->>VM: 本地校验 |team| == teamSize(n,q)
+    VM->>F: teamProposed(questNo, proposalNo, leader, team)
+    F-->>VM: TeamProposed(occurredOrder=0)
+    VM->>REPO: appendEvent(matchId, event)
+    REPO->>DAO: appendWithOrder(matchId, provider, now)
+    DAO->>DAO: [事务] nextOccurredOrder -> insert -> matches.updatedAt=now
+    DAO-->>REPO: occurredOrder
+    REPO->>R: validateEvent(state, event)
+    R-->>REPO: issues
+    REPO-->>VM: AppendResult(order, issues)
+    REPO-->>VM: observeBundle Flow 发射
+    VM->>ENG: replay(match, upTo=null)
+    ENG->>R: reduce(state, event) × N
+    R-->>ENG: GameState
+    ENG-->>VM: ReductionResult(state, issues)
+    VM-->>RS: RecordUiState(phase=VOTING, quest, issues, saveStatus=SAVED)
+
+    U->>RS: 记录投票（逐人或汇总）
+    RS->>VM: onAction(SetVote*) / SetVoteSummary
+    VM->>F: teamVoteRecorded(...)
+    VM->>REPO: appendEvent(TEAM_VOTE_RECORDED)
+    REPO-->>VM: AppendResult
+    VM-->>RS: RecordUiState(实时「赞成 7 > 半数 4 → 通过」)
+
+    U->>RS: 点「确认通过/否决」
+    RS->>VM: onAction(ConfirmDecision(APPROVED))
+    VM->>F: teamProposalResolved(...)
+    VM->>REPO: appendEvent(TEAM_PROPOSAL_RESOLVED)
+    VM->>ENG: replay(...)
+    ENG-->>VM: phase=MISSION_PENDING 或 (REJECTED -> PROPOSAL_OPEN, R+1, leader 顺延)
+    alt 连续 5 次否决
+        ENG-->>VM: status=FINISHED_EVIL, outcome(FIVE_CONSECUTIVE_REJECTS)
+        VM->>REPO: setStatus(matchId, FINISHED_EVIL, null)
+    end
+    VM-->>RS: RecordUiState
+
+    U->>RS: 记录任务牌（失败牌数）
+    RS->>VM: onAction(SetMissionFailCount(1))
+    VM->>F: missionResolved(...)
+    VM->>REPO: appendEvent(MISSION_RESOLVED)
+    VM->>ENG: replay(...)
+    ENG->>R: isMissionFailed(failCount, n, q) + determineOutcome(state)
+    R-->>ENG: outcome / null
+    ENG-->>VM: GameState(quests 更新, goodSuccessCount/evilFailureCount, status 可能变更)
+    VM->>REPO: setStatus(...)  (仅当 status 变化)
+    VM-->>RS: RecordUiState(任务卡 + 时间线刷新)
+
+%% ============ 3. 视角复盘（公开 / 当时 / 上帝） ============
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant PS as ReplayScreen
+    participant VM as ReplayViewModel
+    participant REPO as MatchRepository
+    participant KP as KnowledgeProvider
+    participant RA as ReplayAnalyzer
+    participant TB as TimelineBuilder
+
+    U->>PS: 打开复盘页
+    PS->>VM: onEnter(matchId)
+    VM->>REPO: observeBundle(matchId)
+    REPO-->>VM: MatchBundle(events 已过滤 retracted)
+    VM->>VM: 默认 at = 最后一个事件位置, mode = OBSERVER_AT_TIME
+
+    U->>PS: 拖动时间线到第 2 任务 / 切换视角
+    PS->>VM: onSelectPosition(order) / onSelectPerspective(mode)
+    VM->>KP: snapshot(match, observer, GamePosition(order), mode)
+    KP->>KP: 1) 过滤 occurredOrder <= order
+    KP->>KP: 2) 组装 publicFacts（队伍/投票/任务/Claim）
+    alt mode == OBSERVER_AT_TIME
+        KP->>KP: 3a) 用 roleAssignments 重建 observer 夜间知识<br/>(梅林: 排除 MORDRED；派西维尔: MERLIN+MORGANA 候选)
+        KP->>KP: 4a) 主观笔记仅取 observerSeat 且 availableFromOrder <= order
+    else mode == PUBLIC
+        KP->>KP: 3b) privateRoleFacts / subjectiveBeliefs 置空
+    else mode == GOD_AFTER_REVEAL
+        KP->>KP: 3c) 校验 revealedAt != null，否则拒绝
+        KP->>KP: 4c) seatKnowledge 填真实角色
+    end
+    KP->>KP: 5) canOpenGodView = revealedAt != null && status in {AWAITING_ASSASSINATION, FINISHED_*}
+    KP-->>VM: KnowledgeSnapshot
+    VM->>RA: analyze(snapshot, history<=order)
+    RA->>RA: A01..A12 + TeamCountBounds.bounds()
+    RA-->>VM: List<EvidenceFinding>（每条含 ruleId + sourceEventIds）
+    VM->>TB: build(events, upTo=order)
+    TB-->>VM: List<TimelineEntry>
+    VM-->>PS: ReplayUiState(snapshot, findings, timeline, godBannerVisible)
+
+%% ============ 4. 事件修订（R14）与导入导出 ============
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant UI as RecordScreen / MatchDetailScreen
+    participant VM as RecordViewModel / DetailViewModel
+    participant POL as EventRevisionPolicy
+    participant REPO as MatchRepository
+    participant DAO as MatchEventDao
+    participant ENG as ReplayEngine
+    participant IEC as ImportExportService
+    participant SL as ShareLauncher
+
+    rect rgb(240,244,255)
+    Note over U,ENG: 场景 A —— 修订历史事件并重算后续
+    U->>UI: 编辑第 4 任务的队伍成员
+    UI->>VM: onAction(EditEvent(eventId, newDraft))
+    VM->>POL: canSupersede(oldEvent, newEvent)
+    POL-->>VM: true（类型一致 / 同对局 / 目标未被修订）
+    VM->>REPO: reviseEvent(matchId, targetEventId, replacement)
+    REPO->>DAO: reviseSupersede(matchId, provider, oldId, now)
+    DAO->>DAO: [事务] 新事件 occurredOrder=MAX+1 + insert + 旧事件 retracted=1 + touch
+    REPO-->>VM: AppendResult(issues)
+    VM->>ENG: replay(match)   // 全量重算
+    ENG-->>VM: ReductionResult(state, issues)
+    VM-->>UI: 冲突以 UiIssue 呈现（FINALIZED_CONFLICT / DECISION_VOTE_CONFLICT ...），不静默保留
+    end
+
+    rect rgb(240,250,244)
+    Note over U,SL: 场景 B —— 导出（默认脱敏）与导入
+    U->>UI: 点「导出 JSON」
+    UI->>IEC: exportJson(matchId, ExportOptions(includeSecrets=false, includePrivateNotes=false))
+    IEC->>REPO: getBundle(matchId)
+    REPO-->>IEC: MatchBundle
+    IEC->>IEC: VisibilityFilter 脱敏 -> ExportBundle(schemaVersion=1) -> json
+    IEC-->>UI: json 字符串
+    UI->>SL: shareTextFile("roundtrace-<title>.json", json)
+    SL-->>U: 系统分享面板
+
+    U->>UI: 选择 JSON 文件导入
+    UI->>IEC: importFromJson(uri 内容)
+    IEC->>IEC: 解析 + schemaVersion 校验 + 结构校验
+    alt 校验失败
+        IEC-->>UI: ImportResult.Failure(可读原因, 不产生半场对局)
+    else 校验通过
+        IEC->>REPO: importBundle(bundle)  // 单事务：新 UUID 映射，绝不覆盖已有对局
+        REPO-->>IEC: newMatchId
+        IEC-->>UI: ImportResult.Success(newMatchId)
+        UI->>U: 提示「导入成功，已作为新对局保存」
+    end
+    end

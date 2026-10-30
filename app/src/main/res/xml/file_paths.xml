@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 路径：导出文件写入 cacheDir/exports/ 后分享 -->
+<paths>
+    <cache-path
+        name="exports"
+        path="exports/" />
+</paths>

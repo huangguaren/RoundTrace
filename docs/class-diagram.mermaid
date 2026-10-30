@@ -1,0 +1,582 @@
+%% RoundTrace 领域类图（只含设计与契约，不含实现）
+%% 说明：MatchEvent 为 sealed，10 个具体事件类型见 classDiagram 尾部
+
+classDiagram
+    direction LR
+
+    %% ---------- 基础 ID / 枚举 ----------
+    class MatchId {
+        <<value class>>
+        +String raw
+    }
+    class EventId {
+        <<value class>>
+        +String raw
+    }
+    class MatchStatus {
+        <<enum>>
+        DRAFT
+        IN_PROGRESS
+        AWAITING_ASSASSINATION
+        FINISHED_GOOD
+        FINISHED_EVIL
+        ABANDONED
+    }
+    class RecordPhase {
+        <<enum>>
+        NOT_STARTED
+        PROPOSAL_OPEN
+        VOTING
+        MISSION_PENDING
+        QUEST_RESOLVED
+        ASSASSINATION
+        ENDED
+    }
+    class Perspective {
+        <<enum>>
+        PUBLIC
+        OBSERVER_AT_TIME
+        GOD_AFTER_REVEAL
+    }
+    class EvidenceLevel {
+        <<enum>>
+        RULE_CERTAIN
+        OBSERVER_CERTAIN
+        INFERENCE
+        UNKNOWN
+    }
+    class RoleId {
+        <<enum>>
+        MERLIN
+        PERCIVAL
+        LOYAL_SERVANT
+        MORGANA
+        ASSASSIN
+        MORDRED
+        MINION
+        OBERON
+        UNKNOWN
+        +Alignment alignment
+    }
+    class Alignment {
+        <<enum>>
+        GOOD
+        EVIL
+        UNKNOWN
+    }
+    class MissionOutcome {
+        <<enum>>
+        SUCCESS
+        FAILED
+        UNKNOWN
+    }
+    class ProposalDecision {
+        <<enum>>
+        APPROVED
+        REJECTED
+        UNKNOWN
+    }
+    RoleId --> Alignment
+
+    %% ---------- 配置与身份 ----------
+    class GameConfig {
+        +GameType gameType
+        +String rulesetId
+        +Int rulesetVersion
+        +String presetId
+        +Int playerCount
+        +List~RoleSlotSpec~ roleSlots
+        +SeatId mySeat
+        +SeatId initialLeaderSeat
+        +String title
+        +Long createdAtEpochMs
+        +plannedCount(RoleId) Int
+        +plannedAlignmentCount(Alignment) Int
+        +hasRole(RoleId) Boolean
+    }
+    class RoleSlotSpec {
+        +RoleId roleId
+        +Int count
+    }
+    class Participant {
+        +SeatId seat
+        +String displayName
+        +String colorKey
+    }
+    class RoleAssignment {
+        +SeatId seat
+        +RoleId roleId
+        +RoleSource source
+        +RevealState revealState
+        +String assignedFrom
+        +Alignment alignment
+    }
+    class MatchSummary {
+        +MatchId matchId
+        +String title
+        +Int playerCount
+        +MatchStatus status
+        +String rulesetId
+        +Long updatedAtEpochMs
+        +Int questsStarted
+        +SeatId mySeat
+    }
+    GameConfig o-- RoleSlotSpec
+    RoleAssignment --> RoleId
+
+    %% ---------- 事件 ----------
+    class MatchEvent {
+        <<sealed interface>>
+        +EventId eventId
+        +Int occurredOrder
+        +Long recordedAt
+        +EventVisibility visibility
+        +EventId supersedesId
+        +Boolean retracted
+        +Int questNo
+        +EventType type
+    }
+    class QuestStarted {
+        +Int questNo
+        +SeatId leaderSeat
+    }
+    class TeamProposed {
+        +Int questNo
+        +Int proposalNo
+        +SeatId leaderSeat
+        +List~SeatId~ teamSeats
+    }
+    class TeamVoteRecorded {
+        +Int questNo
+        +Int proposalNo
+        +Map~SeatId,TeamVoteChoice~ votesBySeat
+        +Int approveCount
+        +Int rejectCount
+        +Int unknownVoteCount
+        +Int playerCountAtVote
+    }
+    class TeamProposalResolved {
+        +Int questNo
+        +Int proposalNo
+        +ProposalDecision decision
+        +Int approveCount
+        +Int rejectCount
+        +Int playerCountAtVote
+        +Boolean verified
+    }
+    class MissionResolved {
+        +Int questNo
+        +List~SeatId~ teamSeats
+        +Int teamSizeExpected
+        +Int failCount
+        +MissionOutcome observedOutcome
+        +Boolean verified
+    }
+    class PlayerClaimed {
+        +Int questNo
+        +SeatId speakerSeat
+        +ClaimType claimType
+        +RoleId claimedRole
+        +List~SeatId~ targetSeats
+        +String text
+        +Int proposalNo
+    }
+    class PrivateNoteAdded {
+        +Int questNo
+        +SeatId observerSeat
+        +BeliefType beliefType
+        +List~SeatId~ targetSeats
+        +String text
+        +Int availableFromOrder
+    }
+    class AssassinationRecorded {
+        +SeatId assassinSeat
+        +SeatId targetSeat
+        +Boolean hitMerlin
+    }
+    class MatchAbandoned {
+        +String reason
+    }
+    class MatchFinalized {
+        +Alignment winner
+        +WinReason winReason
+        +String note
+    }
+    MatchEvent <|-- QuestStarted
+    MatchEvent <|-- TeamProposed
+    MatchEvent <|-- TeamVoteRecorded
+    MatchEvent <|-- TeamProposalResolved
+    MatchEvent <|-- MissionResolved
+    MatchEvent <|-- PlayerClaimed
+    MatchEvent <|-- PrivateNoteAdded
+    MatchEvent <|-- AssassinationRecorded
+    MatchEvent <|-- MatchAbandoned
+    MatchEvent <|-- MatchFinalized
+    PlayerClaimed --> RoleId
+
+    %% ---------- 状态 ----------
+    class GameState {
+        +MatchId matchId
+        +GameConfig config
+        +Map~SeatId,RoleId~ roleTruth
+        +MatchStatus status
+        +RecordPhase phase
+        +Int currentQuestNo
+        +Int currentProposalNo
+        +SeatId currentLeaderSeat
+        +List~QuestState~ quests
+        +Int consecutiveRejections
+        +Int goodSuccessCount
+        +Int evilFailureCount
+        +AssassinationState assassination
+        +GameOutcome outcome
+        +IntegrityStatus integrity
+        +List~RuleIssue~ issues
+        +Int lastAppliedOrder
+        +Int eventCount
+    }
+    class QuestState {
+        +Int questNo
+        +SeatId leaderSeat
+        +List~ProposalState~ proposals
+        +Int expectedTeamSize
+        +Int failThreshold
+        +List~SeatId~ teamSeats
+        +Int failCount
+        +MissionOutcome outcome
+        +Boolean verified
+        +Int resolvedAtOrder
+    }
+    class ProposalState {
+        +Int questNo
+        +Int proposalNo
+        +SeatId leaderSeat
+        +List~SeatId~ teamSeats
+        +Int expectedTeamSize
+        +Int approveCount
+        +Int rejectCount
+        +Int unknownVoteCount
+        +Map~SeatId,TeamVoteChoice~ votesBySeat
+        +ProposalDecision decision
+        +Boolean decisionVerified
+        +Int proposedAtOrder
+        +Int resolvedAtOrder
+        +List~EventId~ sourceEventIds
+    }
+    class AssassinationState {
+        +SeatId assassinSeat
+        +SeatId targetSeat
+        +Boolean hitMerlin
+        +Int recordedAtOrder
+    }
+    class GameOutcome {
+        +Alignment winner
+        +WinReason reason
+        +Int decidedAtOrder
+        +List~EventId~ evidenceEventIds
+    }
+    class RuleIssue {
+        +IssueCode code
+        +Severity severity
+        +Int questNo
+        +Int proposalNo
+        +List~SeatId~ seats
+        +EventId eventId
+        +Map args
+    }
+    GameState o-- GameConfig
+    GameState *-- QuestState
+    QuestState *-- ProposalState
+    GameState o-- AssassinationState
+    GameState o-- GameOutcome
+    GameState o-- RuleIssue
+    GameState --> MatchStatus
+    GameState --> RecordPhase
+
+    %% ---------- 重放输入 ----------
+    class ReconstructedMatch {
+        +MatchId matchId
+        +GameConfig config
+        +List~Participant~ participants
+        +Map~SeatId,RoleAssignment~ roleAssignments
+        +List~MatchEvent~ events
+        +Long revealedAt
+    }
+    class GamePosition {
+        +Int occurredOrder
+        +Int questNo
+        +Int proposalNo
+        +includes(Int) Boolean
+    }
+    ReconstructedMatch o-- GameConfig
+    ReconstructedMatch *-- MatchEvent
+    ReconstructedMatch *-- RoleAssignment
+    ReconstructedMatch *-- Participant
+
+    %% ---------- 信息视角 ----------
+    class KnowledgeSnapshot {
+        +GamePosition at
+        +Perspective mode
+        +SeatId observerSeat
+        +RoleId observerRole
+        +Boolean observerRoleIsReconstructed
+        +List~PublicFact~ publicFacts
+        +List~PrivateFact~ privateRoleFacts
+        +List~Belief~ subjectiveBeliefs
+        +Map~SeatId,SeatKnowledge~ seatKnowledge
+        +List~EvidenceFinding~ findings
+        +List~UnknownItem~ unknowns
+        +Boolean canOpenGodView
+    }
+    class PublicFact {
+        +String id
+        +FactKind kind
+        +Int questNo
+        +Int proposalNo
+        +Int occurredOrder
+        +String summary
+        +List~EventId~ sourceEventIds
+    }
+    class PrivateFact {
+        +String id
+        +SeatId subjectSeat
+        +SeatId targetSeat
+        +PrivateRelation relation
+        +KnowledgeBasis basis
+        +List~EventId~ sourceEventIds
+    }
+    class Belief {
+        +String id
+        +SeatId observerSeat
+        +BeliefType beliefType
+        +List~SeatId~ targetSeats
+        +String text
+        +Int availableFromOrder
+    }
+    class SeatKnowledge {
+        +SeatId seat
+        +Alignment knownAlignment
+        +RoleId visibleRole
+        +List~RoleId~ candidateRoles
+        +Set~KnowledgeLabel~ labels
+        +List~EventId~ evidenceIds
+    }
+    class EvidenceFinding {
+        +String id
+        +String label
+        +EvidenceLevel level
+        +String explanation
+        +String ruleId
+        +List~EventId~ sourceEventIds
+        +List~SeatId~ relatedSeats
+        +Int relatedQuestNo
+    }
+    class UnknownItem {
+        +String code
+        +Int questNo
+        +List~SeatId~ seats
+    }
+    class NightKnowledge {
+        +SeatId observerSeat
+        +RoleId role
+        +List~SeatId~ visibleEvilSeats
+        +List~SeatId~ merlinCandidates
+        +List~SeatId~ evilTeammates
+        +List~String~ notes
+    }
+    KnowledgeSnapshot o-- GamePosition
+    KnowledgeSnapshot *-- PublicFact
+    KnowledgeSnapshot *-- PrivateFact
+    KnowledgeSnapshot *-- Belief
+    KnowledgeSnapshot *-- SeatKnowledge
+    KnowledgeSnapshot *-- EvidenceFinding
+    KnowledgeSnapshot *-- UnknownItem
+
+    %% ---------- 领域接口 ----------
+    class GameRules {
+        <<interface>>
+        +GameType gameType
+        +String rulesetId
+        +Int rulesetVersion
+        +teamSize(Int, Int) Int
+        +failThreshold(Int, Int) Int
+        +isTeamApproved(Int, Int) Boolean
+        +isMissionFailed(Int, Int, Int) Boolean
+        +validateSetup(GameConfig) List~RuleIssue~
+        +validateEvent(GameState, MatchEvent) List~RuleIssue~
+        +initialState(ReconstructedMatch) GameState
+        +reduce(GameState, MatchEvent) GameState
+        +determineOutcome(GameState) GameOutcome
+    }
+    class GameReducer {
+        <<interface>>
+        +initialState(ReconstructedMatch) GameState
+        +step(GameState, MatchEvent) ReductionResult
+        +replay(ReconstructedMatch, Int) ReductionResult
+    }
+    class KnowledgeProvider {
+        <<interface>>
+        +snapshot(ReconstructedMatch, SeatId, GamePosition, Perspective) KnowledgeSnapshot
+    }
+    class ReplayAnalyzer {
+        <<interface>>
+        +analyze(KnowledgeSnapshot, List~MatchEvent~) List~EvidenceFinding~
+    }
+    class GameRulesRegistry {
+        <<interface>>
+        +rulesFor(String, Int) GameRules
+        +rulesFor(GameConfig) GameRules
+        +supportedRulesets() List~RulesetDescriptor~
+    }
+    class AvalonRules
+    class AvalonReducer
+    class AvalonKnowledgeProvider
+    class AvalonEvidenceAnalyzer
+    class ReplayEngine
+    class TimelineBuilder
+    class TeamCountBounds {
+        +bounds(List~SeatId~, Int, Int, Set~SeatId~, Set~SeatId~) CountBounds
+    }
+
+    GameRules <|.. AvalonRules
+    GameReducer <|.. AvalonReducer
+    KnowledgeProvider <|.. AvalonKnowledgeProvider
+    ReplayAnalyzer <|.. AvalonEvidenceAnalyzer
+    GameRulesRegistry --> GameRules
+    AvalonReducer --> GameRules
+    ReplayEngine --> GameReducer
+    ReplayEngine --> ReconstructedMatch
+    AvalonKnowledgeProvider --> KnowledgeSnapshot
+    AvalonEvidenceAnalyzer --> EvidenceFinding
+    AvalonEvidenceAnalyzer --> TeamCountBounds
+
+    %% ---------- 数据端口 ----------
+    class MatchRepository {
+        <<interface>>
+        +observeSummaries(MatchStatusFilter) Flow
+        +observeBundle(MatchId) Flow
+        +getBundle(MatchId) MatchBundle
+        +createMatch(MatchCreationDraft) MatchId
+        +appendEvent(MatchId, MatchEvent) AppendResult
+        +reviseEvent(MatchId, EventId, MatchEvent) AppendResult
+        +retractEvent(MatchId, EventId) AppendResult
+        +saveRoleAssignments(MatchId, List~RoleAssignment~) Unit
+        +revealAllRoles(MatchId) AppendResult
+        +setStatus(MatchId, MatchStatus, Long) Unit
+        +renameMatch(MatchId, String) Unit
+        +deleteMatch(MatchId) Unit
+        +saveDraft(MatchId, String, String) Unit
+        +loadDraft(MatchId, String) String
+        +clearDraft(MatchId, String) Unit
+        +importBundle(ImportBundle) MatchId
+    }
+    class MatchBundle {
+        +MatchSummary summary
+        +GameConfig config
+        +List~Participant~ participants
+        +Map~SeatId,RoleAssignment~ roleAssignments
+        +List~MatchEvent~ events
+        +Long revealedAt
+        +toReconstructedMatch() ReconstructedMatch
+    }
+    class RoomMatchRepository
+    class EventRevisionPolicy {
+        +canSupersede(MatchEvent, MatchEvent) Boolean
+        +buildReplacement(MatchEvent, MatchEvent, Long) MatchEvent
+    }
+    MatchRepository <|.. RoomMatchRepository
+    RoomMatchRepository --> MatchBundle
+    MatchBundle --> ReconstructedMatch
+    RoomMatchRepository --> EventRevisionPolicy
+
+    %% ---------- 持久化 ----------
+    class MatchEntity {
+        +String id
+        +String gameType
+        +String rulesetId
+        +Int rulesetVersion
+        +String presetId
+        +Int playerCount
+        +String configJson
+        +String status
+        +String title
+        +Int mySeat
+        +Int initialLeaderSeat
+        +Long createdAt
+        +Long updatedAt
+        +Long revealedAt
+        +Int schemaVersion
+    }
+    class ParticipantEntity {
+        +String id
+        +String matchId
+        +Int seatNumber
+        +String displayName
+        +String colorKey
+    }
+    class RoleAssignmentEntity {
+        +String id
+        +String matchId
+        +Int seatNumber
+        +String roleId
+        +String source
+        +String revealState
+        +String assignedFrom
+    }
+    class MatchEventEntity {
+        +String id
+        +String matchId
+        +Int occurredOrder
+        +String phaseKey
+        +String eventType
+        +Int payloadVersion
+        +String payloadJson
+        +String visibility
+        +Long recordedAt
+        +String supersedesId
+        +Int retracted
+    }
+    class MatchDraftEntity {
+        +String matchId
+        +String screenKey
+        +String draftJson
+        +Long updatedAt
+    }
+    class AnalysisReportEntity {
+        +String id
+        +String matchId
+        +Int eventRevision
+        +String perspectiveKey
+        +String contentJson
+        +Long createdAt
+    }
+    class EventCodec {
+        +encode(MatchEvent) MatchEventEntity
+        +decode(MatchEventEntity) MatchEvent
+    }
+    MatchEntity "1" --> "*" ParticipantEntity : matchId CASCADE
+    MatchEntity "1" --> "*" RoleAssignmentEntity : matchId CASCADE
+    MatchEntity "1" --> "*" MatchEventEntity : matchId CASCADE
+    MatchEntity "1" --> "*" MatchDraftEntity : matchId CASCADE
+    MatchEntity "1" --> "*" AnalysisReportEntity : matchId CASCADE
+    RoomMatchRepository --> MatchEntity
+    RoomMatchRepository --> MatchEventEntity
+    EventCodec --> MatchEvent
+    EventCodec --> MatchEventEntity
+
+    %% ---------- 导出 ----------
+    class MatchJsonCodec {
+        +export(MatchBundle, ExportOptions) String
+        +import(String) ImportResult
+    }
+    class MarkdownExporter {
+        +render(MatchBundle, KnowledgeSnapshot, ExportOptions) String
+    }
+    class ImportExportService {
+        +exportJson(MatchId, ExportOptions) String
+        +exportMarkdown(MatchId, ExportOptions) String
+        +importFromJson(String) ImportResult
+    }
+    ImportExportService --> MatchJsonCodec
+    ImportExportService --> MarkdownExporter
+    MatchJsonCodec --> MatchBundle

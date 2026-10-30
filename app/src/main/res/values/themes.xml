@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 浅色启动主题：仅作为进程启动到 Compose 首帧之间的占位主题 -->
+<resources>
+    <style name="Theme.RoundTrace" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <!-- Android 12+ 系统启动窗：奶油色背景 + 透明图标，直接过渡到 Compose splash -->
+        <item name="android:windowSplashScreenBackground">#FBF6EF</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
+    </style>
+</resources>

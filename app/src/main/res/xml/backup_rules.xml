@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 以下的备份规则：只备份数据库与 SharedPreferences。
+     cache 目录本来就不参与全量备份，无需 exclude。 -->
+<full-backup-content>
+    <include domain="database" path="." />
+    <include domain="sharedpref" path="." />
+</full-backup-content>

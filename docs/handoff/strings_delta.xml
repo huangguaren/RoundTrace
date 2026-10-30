@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  字符串增量包 · 只包含 values/strings.xml 里**确实还没有**的条目。
+
+  背景（2026-10-30 15:24 核对）：主线已自行实现 perspective_* / evidence_level_* / evidence_* /
+  replay_* / reveal_* / claim_* 共 80+ 条文案，本包**不再重复定义**它们，
+  否则同一概念会有两套 key，后面必然出现「改了一处、另一处没改」。
+
+  本包只有两件事：
+    1) ruleId（A01–A12）→ 人类可读名，用于 EvidenceCard 的规则行（现在界面直接显示 A05_TEAM_CONTAINS_EVIL）；
+    2) M5 导出弹窗正文。
+-->
+<resources>
+
+    <!-- ===== 规则名（对应 AvalonEvidenceAnalyzer.RULE_A01..RULE_A12） ===== -->
+    <string name="rule_a01">队伍人数</string>
+    <string name="rule_a02">投票未通过</string>
+    <string name="rule_a03">失败牌达到阈值</string>
+    <string name="rule_a04">任务成功不能洗白队员</string>
+    <string name="rule_a05">队伍含坏人</string>
+    <string name="rule_a06">失败牌数暗示队内有坏人</string>
+    <string name="rule_a07">无法定位出失败牌的人</string>
+    <string name="rule_a08">声称不等于事实</string>
+    <string name="rule_a09">队长顺序</string>
+    <string name="rule_a10">连续否决次数</string>
+    <string name="rule_a11">夜间已知坏人</string>
+    <string name="rule_a12">数据不完整</string>
+
+    <!-- ruleId 匹配不上时的兜底（新增规则但忘记加文案时用，绝不显示原始 code） -->
+    <string name="rule_unknown">其他规则依据</string>
+
+    <!-- ===== M5 导出弹窗 ===== -->
+    <string name="export_dialog_body">将包含：公开事件 / 不含：真实身份、私人笔记</string>
+
+</resources>

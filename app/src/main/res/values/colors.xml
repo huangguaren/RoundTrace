@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅存放「图标」相关资源色。
+  硬约束（T05②）：不得出现任何 UI 语义色；UI 语义色一律在 core/ui/theme/Color.kt。
+-->
+<resources>
+    <color name="ic_launcher_background">#3956D8</color>
+</resources>
