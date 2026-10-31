@@ -13,7 +13,8 @@
 | 2 | `48a7144` | RT-001 `revealedAt` 回归 | test(data) |
 | 3 | `8108686` | RT-004 状态投影统一重算 | fix(data) |
 | 4 | `017b98e` | RT-005 视角可见性统一 | fix(knowledge) |
-| 5 | （本提交） | RT-005 补漏：复盘时间线按视角过滤 | fix(replay) |
+| 5 | `73ffc84` | RT-005 补漏：复盘时间线按视角过滤 | fix(replay) |
+| 6 | （本提交） | 最终三件套验证 + 本文档定稿 | docs(audit) |
 
 均**未 push**。
 
@@ -35,8 +36,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | 单测用例 | 208 | **229**（+21） |
 | 失败 | 0 | **0** |
 | lint | 0 error | **0 error / 54 warning**（与基线同类，未新增） |
-| APK | 20.4 MB | `app-debug.apk` **20,494,346 bytes**（第 4 提交后构建；第 5 提交仅增量） |
-| 构建 | SUCCESSFUL | **BUILD SUCCESSFUL in 2m 29s** |
+| APK | 20.4 MB | `app-debug.apk` **20,595,897 bytes**（最终三件套全量构建） |
+| 构建 | SUCCESSFUL | **BUILD SUCCESSFUL in 2m 4s** |
 
 ### 失败名（过程中的红→绿记录）
 
