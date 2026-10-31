@@ -6,8 +6,7 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <!-- Android 12+ 系统启动窗：奶油色背景 + 透明图标，直接过渡到 Compose splash -->
-        <item name="android:windowSplashScreenBackground">#FBF6EF</item>
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
+        <!-- Android 12+ 的系统启动窗属性放在 values-v31/themes.xml：
+             windowSplashScreen* 是 API 31 属性，写在基础 values/ 会触发 lint NewApi 错误。 -->
     </style>
 </resources>

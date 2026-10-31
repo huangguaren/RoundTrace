@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+（API 31）系统启动窗。
+  注意：同名的 style 在 values-v31 中会**整体替换** values/ 中的定义，不会自动合并，
+  因此这里必须完整重复基础主题的全部 item，再追加 splash 专属属性。
+-->
+<resources>
+    <style name="Theme.RoundTrace" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <!-- Android 12+ 系统启动窗：奶油色背景 + 透明图标，直接过渡到 Compose splash -->
+        <item name="android:windowSplashScreenBackground">#FBF6EF</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
+    </style>
+</resources>
