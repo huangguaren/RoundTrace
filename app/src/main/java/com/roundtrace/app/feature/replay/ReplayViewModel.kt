@@ -174,7 +174,16 @@ class ReplayViewModel(
             observerSeat = observer,
             snapshot = snapshot,
             findings = findings,
-            timeline = TimelineBuilder.build(bundle.events, upTo = at.occurredOrder),
+            // 时间线同样受可见性约束：公开视角不得出现私人笔记/私有声称
+            // （RecordScreen 那条时间线服务「本人记录」，不受影响，故只在此处过滤）
+            timeline = TimelineBuilder.build(
+                events = com.roundtrace.app.core.replay.VisibleEventPolicy.forPerspective(
+                    events = bundle.events,
+                    mode = effectiveMode,
+                    observerSeat = observer
+                ),
+                upTo = at.occurredOrder
+            ),
             canOpenGodView = probe.canOpenGodView,
             godViewBlocked = blocked,
             errorMessage = null

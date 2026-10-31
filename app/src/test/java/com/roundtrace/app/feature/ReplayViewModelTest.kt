@@ -33,12 +33,32 @@ class ReplayViewModelTest {
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
 
+    private companion object {
+        const val PRIVATE_NOTE_ID = "rv-private-note"
+        const val PRIVATE_NOTE_TEXT = "私下记：4 号可疑"
+    }
+
     private val reducerHolder = com.roundtrace.app.core.rules.DefaultGameRulesRegistry()
     private val provider = AvalonKnowledgeProvider(reducerHolder.avalonReducer)
     private val analyzer = AvalonEvidenceAnalyzer()
 
     private fun repository(revealed: Boolean = false): FakeMatchRepository {
         val builder = com.roundtrace.app.knowledge.AvalonScenario.fullMatch()
+        // 叠加一条归属 1 号（mySeat）的私有笔记，用于验证时间线的可见性过滤
+        builder.appendRaw(
+            com.roundtrace.app.core.model.PrivateNoteAdded(
+                eventId = com.roundtrace.app.core.model.EventId(PRIVATE_NOTE_ID),
+                occurredOrder = 900,
+                recordedAt = 0L,
+                visibility = com.roundtrace.app.core.model.EventVisibility.PRIVATE_OBSERVER,
+                questNo = 3,
+                observerSeat = 1,
+                beliefType = com.roundtrace.app.core.model.BeliefType.SUSPECT,
+                targetSeats = listOf(4),
+                text = PRIVATE_NOTE_TEXT,
+                availableFromOrder = 1
+            )
+        )
         val scenario = com.roundtrace.app.knowledge.AvalonScenario.match(revealed)
         return FakeMatchRepository(
             config = com.roundtrace.app.knowledge.AvalonScenario.eightPlayerConfig(),
@@ -225,5 +245,44 @@ class ReplayViewModelTest {
             state.findings.isEmpty()
         )
         assertTrue("同时应呈现空态", state.hasNoFindings)
+    }
+
+    @Test
+    fun t58_public_timeline_hides_private_notes() = runTest {
+        val viewModel = newViewModel(repository())
+        advanceUntilIdle()
+        viewModel.onAction(
+            com.roundtrace.app.feature.replay.ReplayAction.SelectPerspective(Perspective.PUBLIC)
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue("公开视角时间线不得为空", state.timeline.isNotEmpty())
+        assertTrue(
+            "公开视角的时间线不得出现私人笔记：${state.timeline.map { it.sourceEventIds }}",
+            state.timeline.none { entry ->
+                entry.sourceEventIds.any { it.raw == PRIVATE_NOTE_ID }
+            }
+        )
+    }
+
+    @Test
+    fun t58_observer_timeline_shows_own_private_note() = runTest {
+        val viewModel = newViewModel(repository())
+        advanceUntilIdle()
+        viewModel.onAction(
+            com.roundtrace.app.feature.replay.ReplayAction.SelectPerspective(
+                Perspective.OBSERVER_AT_TIME
+            )
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(
+            "1 号本人应能在时间线里看到自己的私人笔记",
+            state.timeline.any { entry ->
+                entry.sourceEventIds.any { it.raw == PRIVATE_NOTE_ID }
+            }
+        )
     }
 }
