@@ -354,3 +354,66 @@ APK 20,460,378 bytes
 ```
 
 用例数 260 → **261**（+1 冻结测试）。
+
+---
+
+## Phase 2 收尾：B2 迁移前备份 + B3 启动自检
+
+| commit | 内容 |
+|---|---|
+| `7707149` | **B2**：`backupBeforeMigration` + `build()` 前置调用 + 4 例测试 + `.gitignore` 加 `.kotlin/` |
+| `674d95a` | **B3**：`findDuplicateActivePositions` / `warnOnDuplicateActivePositions` + `onOpen` 回调 + 6 例测试 |
+
+### 备份调用的位置（主理人问的行号）
+
+`app/src/main/java/com/roundtrace/app/core/database/RoundTraceDatabase.kt`：
+
+| 行号 | 内容 |
+|---|---|
+| **294** | `backupBeforeMigration(context, name)` ← **在 builder 之前** |
+| 296 | `return Room.databaseBuilder(` |
+| 305 | `.addCallback(...)`（B3 的 `onOpen` 自检） |
+
+行号关系即可证明：备份不是挂在 `onOpen` 上的（那会在迁移之后才触发）。
+
+### 测试名
+
+**B2**（`DatabaseBackupTest`，+4）：
+`buildBacksUpLegacyDatabaseBeforeMigration`（**只调 `build()` 不 open** 就断言 `.bak.v3` 已存在——以此证明没挂在 onOpen 上）、`backupSkipsWhenNameIsNull`、`backupSkipsMissingDatabaseWithoutCrashing`、`inMemoryDatabaseNeverProducesBackup`
+
+**B3**（`Inv1SelfCheckTest`，+6）：
+`healthyDatabaseHasNoDuplicates`、`detectsTwoActiveEventsSharingPosition`、`retractedVersionsSharingPositionAreNotDuplicates`、`duplicatesAreIsolatedPerMatch`、`duplicatesAreCappedAtTwenty`、`selfCheckNeverThrowsAndDoesNotBlockStartup`（并断言自检**不改任何行**）
+
+### 验证
+
+```bash
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
+BUILD SUCCESSFUL in 2m 15s
+TOTAL tests=271 failures=0
+lint 0 error；APK 20,561,927 bytes
+```
+
+用例数 261 → **271**（+4 B2、+6 B3）。
+
+### 两处实现取舍
+
+1. **备份用「直接读文件」而不是 `RoomDatabase.Callback`**：`onOpen` 在迁移**之后**才触发，
+   挂在上面等于备份一个已被改过的库。所以只能放在 `databaseBuilder` 之前，靠
+   `SQLiteDatabase.openDatabase(...OPEN_READWRITE)` + `PRAGMA user_version` 判断版本。
+2. **备份前先 `PRAGMA wal_checkpoint(TRUNCATE)`**：本库启用 WAL，最新事务可能还在 `-wal` 里。
+   不 checkpoint 就复制会得到「缺最近事务」的备份——这种备份比没有更危险，因为它看起来是好的。
+   checkpoint 本身包了 `runCatching`：即使因其它连接占用未能完全合并，也继续复制（
+   仍是某个一致状态），并在外层 `runCatching` 兜底，**全程不抛、不阻断启动**。
+
+### B3 为什么只记录不修复
+
+自检跑在 `onOpen` 里，抛异常 = 用户彻底打不开 App；「带着脏数据继续跑」至少还能导出、
+还能靠 B2 的备份恢复。自动「修」等于改历史（本项目禁止 DELETE），风险远大于收益。
+所以只 `Log.w` 前 20 条样本，处置权交给后续版本与备份恢复。
+
+### 顺带修的一处文档不一致
+
+`build(context, name: String? = null)` 的原 KDoc 写「测试可传 null 走内存库」，
+但实现里 `null` 是回落到 `DATABASE_NAME`（内存库走的是 `buildInMemory`）。
+已把 KDoc 改成「`null` = 不启用迁移前备份，库名仍回落到 DATABASE_NAME」，
+避免下一个人照着旧注释误用。
