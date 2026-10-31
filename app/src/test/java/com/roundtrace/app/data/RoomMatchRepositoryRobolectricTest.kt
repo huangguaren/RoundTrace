@@ -10,6 +10,16 @@ import com.roundtrace.app.core.model.EventId
 import com.roundtrace.app.core.model.EventType
 import com.roundtrace.app.core.model.MatchCreationDraft
 import com.roundtrace.app.core.model.MatchId
+import com.roundtrace.app.core.model.MatchStatus
+import com.roundtrace.app.core.model.AssassinationRecorded
+import com.roundtrace.app.core.model.ProposalDecision
+import com.roundtrace.app.core.model.RevealState
+import com.roundtrace.app.core.model.RoleAssignment
+import com.roundtrace.app.core.model.RoleSource
+import com.roundtrace.app.core.model.TeamProposalResolved
+import com.roundtrace.app.core.model.TeamVoteRecorded
+import com.roundtrace.app.core.knowledge.AvalonKnowledgeProvider
+import com.roundtrace.app.core.model.Perspective
 import com.roundtrace.app.core.model.MissionOutcome
 import com.roundtrace.app.core.model.MissionResolved
 import com.roundtrace.app.core.model.QuestStarted
@@ -472,5 +482,179 @@ class RoomMatchRepositoryRobolectricTest {
             database.matchEventDao().listAll(matchB.raw).count { it.retracted }
         )
         assertNotNull(aEvent.eventId)
+    }
+
+    // ————————————————————————————————————————————————————————
+    // RT-001：appendEvent 不得把 revealedAt 抹成 null
+    // ————————————————————————————————————————————————————————
+
+    /** 追加一次「全员赞成 + 0 张失败牌」的完整任务闭环。 */
+    private suspend fun appendWinningQuest(
+        matchId: MatchId,
+        questNo: Int,
+        leader: Int,
+        team: List<Int>
+    ) {
+        repository.appendEvent(matchId, questStarted(questNo, "q$questNo-started").copy(leaderSeat = leader))
+        repository.appendEvent(
+            matchId,
+            TeamProposed(
+                eventId = EventId("q$questNo-proposal"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                proposalNo = 1,
+                leaderSeat = leader,
+                teamSeats = team
+            )
+        )
+        repository.appendEvent(
+            matchId,
+            TeamVoteRecorded(
+                eventId = EventId("q$questNo-vote"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                proposalNo = 1,
+                votesBySeat = null,
+                approveCount = 8,
+                rejectCount = 0,
+                playerCountAtVote = 8
+            )
+        )
+        repository.appendEvent(
+            matchId,
+            TeamProposalResolved(
+                eventId = EventId("q$questNo-resolved"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                proposalNo = 1,
+                decision = ProposalDecision.APPROVED,
+                approveCount = 8,
+                rejectCount = 0,
+                playerCountAtVote = 8
+            )
+        )
+        repository.appendEvent(
+            matchId,
+            MissionResolved(
+                eventId = EventId("q$questNo-mission"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                teamSeats = team,
+                teamSizeExpected = team.size,
+                failCount = 0,
+                observedOutcome = MissionOutcome.SUCCESS
+            )
+        )
+    }
+
+    @Test
+    fun setStatusActuallyPersistsRevealedAt() = runBlocking {
+        val matchId = createMatch()
+        val revealedAt = 1_700_000_500_000L
+
+        repository.setStatus(matchId, MatchStatus.FINISHED_GOOD, revealedAt)
+
+        assertEquals(
+            "setStatus 必须把 revealedAt 写进 matches",
+            revealedAt,
+            database.matchDao().findById(matchId.raw)?.revealedAt
+        )
+    }
+
+    @Test
+    fun appendEventPreservesRevealedAt() = runBlocking {
+        val matchId = createMatch()
+        val revealedAt = 1_700_000_600_000L
+        repository.setStatus(matchId, MatchStatus.FINISHED_GOOD, revealedAt)
+
+        // 揭晓之后再补录一条事件：状态投影会重写 status，但绝不能清掉 revealedAt
+        repository.appendEvent(matchId, questStarted(1, "after-reveal"))
+
+        assertEquals(
+            "补录事件不得抹掉已揭晓时间（RT-001）",
+            revealedAt,
+            database.matchDao().findById(matchId.raw)?.revealedAt
+        )
+        assertNotNull(
+            "揭晓状态本身也不应被清空",
+            database.matchDao().findById(matchId.raw)?.revealedAt
+        )
+    }
+
+    @Test
+    fun threeQuestWinsThenAssassinationKeepsRevealedAtAndGodView() = runBlocking {
+        val matchId = createMatch()
+        val revealedAt = 1_700_000_700_000L
+
+        // 三次任务成功 → AWAITING_ASSASSINATION
+        appendWinningQuest(matchId, questNo = 1, leader = 1, team = listOf(1, 2, 3))
+        appendWinningQuest(matchId, questNo = 2, leader = 2, team = listOf(1, 2, 3, 4))
+        appendWinningQuest(matchId, questNo = 3, leader = 3, team = listOf(4, 6, 7, 8))
+
+        assertEquals(
+            "三次任务成功后应进入待刺杀",
+            MatchStatus.AWAITING_ASSASSINATION,
+            database.matchDao().findById(matchId.raw)?.status?.let { MatchStatus.valueOf(it) }
+        )
+
+        // 揭晓真实身份（1 号梅林，5 号刺客）
+        repository.saveRoleAssignments(
+            matchId,
+            listOf(
+                RoleAssignment(1, RoleId.MERLIN, RoleSource.REVEALED_AFTER_END, RevealState.REVEALED),
+                RoleAssignment(5, RoleId.ASSASSIN, RoleSource.REVEALED_AFTER_END, RevealState.REVEALED)
+            )
+        )
+        repository.setStatus(matchId, MatchStatus.AWAITING_ASSASSINATION, revealedAt)
+
+        // 刺杀命中梅林 → FINISHED_EVIL
+        repository.appendEvent(
+            matchId,
+            AssassinationRecorded(
+                eventId = EventId("assassination"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                assassinSeat = 5,
+                targetSeat = 1,
+                hitMerlin = null
+            )
+        )
+
+        val entity = database.matchDao().findById(matchId.raw)
+        assertEquals(
+            "刺杀结算为坏人胜",
+            MatchStatus.FINISHED_EVIL.name,
+            entity?.status
+        )
+        assertEquals(
+            "状态变更不得抹掉 revealedAt（RT-001）",
+            revealedAt,
+            entity?.revealedAt
+        )
+
+        val bundle = repository.getBundle(matchId)!!
+        val provider = AvalonKnowledgeProvider(DefaultGameRulesRegistry().avalonReducer)
+        assertTrue(
+            "已揭晓且已终局时上帝视角必须可用",
+            provider.canOpenGodView(bundle.toReconstructedMatch(), MatchStatus.FINISHED_EVIL)
+        )
+        // 真正构建一次上帝快照，确保 reveal 链路端到端可用
+        val snapshot = provider.snapshot(
+            match = bundle.toReconstructedMatch(),
+            observer = null,
+            at = com.roundtrace.app.core.model.GamePosition(
+                bundle.events.maxOf { it.occurredOrder }
+            ),
+            mode = Perspective.GOD_AFTER_REVEAL
+        )
+        assertEquals(
+            "上帝视角应看到 1 号是梅林",
+            RoleId.MERLIN,
+            snapshot.seatKnowledge.getValue(1).visibleRole
+        )
     }
 }
