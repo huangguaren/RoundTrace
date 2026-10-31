@@ -246,10 +246,16 @@ class EventCodec(
         val payload = parsePayload(entity.payloadJson, entity.id)
         val base = BaseFields(
             eventId = EventId(entity.id),
-            // RT-003 Step 1：领域层的 occurredOrder 从 logicalPosition 取。
-            // Step 1 内两者对所有新建数据相等（编码时 logicalPosition 默认 = occurredOrder），
-            // 对历史含修订数据则不同——但读路径仍按列 occurredOrder 排序，故可观察行为不变。
-            occurredOrder = entity.logicalPosition,
+            // RT-003 Step 1 **冻结读语义**：领域 occurredOrder 仍取列 occurredOrder。
+            //
+            // 为什么不能在这里取 logicalPosition：`ReplayEngine` 是按领域 occurredOrder
+            // 过滤（upTo）与排序的。一旦这里改成 logicalPosition，读路径的修复就提前生效了——
+            // 一条「位置 3 / 写入序号 21」的修订事件会被 `replay(upTo = 3)` 算进去，
+            // 而这属于 Step 3 才允许定义的行为，且会让 v3 老数据在升级后「历史解读自己变了」。
+            //
+            // Step 3 切换读路径时，把这一行改成 entity.logicalPosition，
+            // 并同步更新 EventSlotAssignmentTest 里的 step1_ 冻结用例。
+            occurredOrder = entity.occurredOrder,
             recordedAt = entity.recordedAt,
             visibility = visibilityOf(entity.visibility),
             supersedesId = entity.supersedesId?.let { EventId(it) },

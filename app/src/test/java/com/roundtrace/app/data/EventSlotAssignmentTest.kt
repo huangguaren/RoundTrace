@@ -7,6 +7,7 @@ import com.roundtrace.app.core.database.EventCodec
 import com.roundtrace.app.core.database.RoundTraceDatabase
 import com.roundtrace.app.core.database.dao.EventSlot
 import com.roundtrace.app.core.model.EventId
+import com.roundtrace.app.core.model.GamePosition
 import com.roundtrace.app.core.model.MatchCreationDraft
 import com.roundtrace.app.core.model.MatchId
 import com.roundtrace.app.core.model.QuestStarted
@@ -232,5 +233,67 @@ class EventSlotAssignmentTest {
         assertEquals("B 局事件数不变", 2, bRows.size)
         assertEquals("B 局位置不变", listOf(1, 2), bRows.values.sortedBy { it.occurredOrder }.map { it.logicalPosition })
         assertTrue("B 局不得出现 revisionSeq > 0", bRows.values.all { it.revisionSeq == 0 })
+    }
+
+    // ————————————————————————————————————————————————————————
+    // Step 1 冻结用例：读语义必须与改造前完全一致
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * **冻结测试**：Step 1 不允许提前切读路径。
+     *
+     * `ReplayEngine` 是按**领域 `occurredOrder`** 做 `upTo` 过滤与排序的
+     * （`filter { upTo == null || it.occurredOrder <= upTo }`）。因此只要 `EventCodec.decode`
+     * 改成取 `logicalPosition`，读路径修复就会提前生效：
+     * 一条「位置 5 / 写入序号 6」的修订事件会被 `replay(upTo = 5)` 算进去 ——
+     * 那是 Step 3 才允许定义的行为，且会让 v3 老数据升级后「历史解读自己变了」。
+     *
+     * 本用例把**今天的行为**钉住。Step 3 切换读路径时它会变红——那正是切换的信号，
+     * 届时改写期望值（并把函数名里的 step1_ 去掉）。
+     */
+    @Test
+    fun step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition() = runBlocking {
+        val matchId = createMatch()
+        (1..5).forEach { index -> append(matchId, "e-$index") }
+        val slot = revise(matchId, targetId = "e-5", newId = "e-5-v2")
+
+        assertEquals("前提：修订的写入序号应为 6", 6, slot.occurredOrder)
+        assertEquals("前提：修订的逻辑位置应为 5", 5, slot.logicalPosition)
+
+        val bundle = repository.getBundle(matchId)!!
+        val revision = bundle.events.first { it.eventId.raw == "e-5-v2" }
+
+        assertEquals(
+            "Step 1 冻结：领域 occurredOrder 必须等于**列** occurredOrder（写入序号），不取 logicalPosition",
+            slot.occurredOrder,
+            revision.occurredOrder
+        )
+        assertNotEquals(
+            "Step 1 冻结：领域 occurredOrder 不得等于 logicalPosition（Step 3 才切）",
+            slot.logicalPosition,
+            revision.occurredOrder
+        )
+
+        // upTo 语义必须仍是「按写入序号」：位置 5 的时间点看不含这条修订
+        assertTrue(
+            "Step 1 冻结：replay(upTo = 5) 不得包含写入序号 6 的修订事件",
+            !GamePosition(5).includes(revision.occurredOrder)
+        )
+        assertTrue(
+            "Step 1 冻结：replay(upTo = 6) 才包含它",
+            GamePosition(6).includes(revision.occurredOrder)
+        )
+
+        // 排序仍是「按列 occurredOrder」→ 修订排在最末尾（而不是在原位置 5 上）
+        assertEquals(
+            "Step 1 冻结：bundle 的事件顺序仍是列 occurredOrder 升序（修订排末尾）",
+            listOf("e-1", "e-2", "e-3", "e-4", "e-5-v2"),
+            bundle.events.map { it.eventId.raw }
+        )
+        assertEquals(
+            "Step 1 冻结：重放看到的顺序编号应为 1,2,3,4,6（跳过被撤销的 5）",
+            listOf(1, 2, 3, 4, 6),
+            bundle.events.map { it.occurredOrder }
+        )
     }
 }
