@@ -657,4 +657,219 @@ class RoomMatchRepositoryRobolectricTest {
             snapshot.seatKnowledge.getValue(1).visibleRole
         )
     }
+
+    // ————————————————————————————————————————————————————————
+    // RT-004：matches.status 必须始终等于「事件重放派生状态」
+    // ————————————————————————————————————————————————————————
+
+    /** 追加一次「全员赞成 + [failCount] 张失败牌」的任务闭环。 */
+    private suspend fun appendQuest(
+        matchId: MatchId,
+        questNo: Int,
+        leader: Int,
+        team: List<Int>,
+        failCount: Int
+    ) {
+        repository.appendEvent(
+            matchId,
+            questStarted(questNo, "f$questNo-started").copy(leaderSeat = leader)
+        )
+        repository.appendEvent(
+            matchId,
+            TeamProposed(
+                eventId = EventId("f$questNo-proposal"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                proposalNo = 1,
+                leaderSeat = leader,
+                teamSeats = team
+            )
+        )
+        repository.appendEvent(
+            matchId,
+            TeamVoteRecorded(
+                eventId = EventId("f$questNo-vote"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                proposalNo = 1,
+                votesBySeat = null,
+                approveCount = 8,
+                rejectCount = 0,
+                playerCountAtVote = 8
+            )
+        )
+        repository.appendEvent(
+            matchId,
+            TeamProposalResolved(
+                eventId = EventId("f$questNo-resolved"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                proposalNo = 1,
+                decision = ProposalDecision.APPROVED,
+                approveCount = 8,
+                rejectCount = 0,
+                playerCountAtVote = 8
+            )
+        )
+        repository.appendEvent(
+            matchId,
+            MissionResolved(
+                eventId = EventId("f$questNo-mission"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = questNo,
+                teamSeats = team,
+                teamSizeExpected = team.size,
+                failCount = failCount,
+                observedOutcome = if (failCount == 0) {
+                    MissionOutcome.SUCCESS
+                } else {
+                    MissionOutcome.FAILED
+                }
+            )
+        )
+    }
+
+    /** 用当前库里的事件重放，得到「权威」状态。 */
+    private fun derivedStatus(matchId: MatchId): MatchStatus {
+        val bundle = runBlocking { repository.getBundle(matchId) }!!
+        return ReplayEngine(DefaultGameRulesRegistry().avalonReducer)
+            .replay(bundle.toReconstructedMatch())
+            .state
+            .status
+    }
+
+    private fun storedStatus(matchId: MatchId): MatchStatus =
+        MatchStatus.valueOf(
+            runBlocking { database.matchDao().findById(matchId.raw) }!!.status
+        )
+
+    @Test
+    fun retractingQuestEventRecomputesMatchStatus() = runBlocking {
+        val matchId = createMatch()
+
+        // 三次任务失败 → FINISHED_EVIL
+        appendQuest(matchId, questNo = 1, leader = 1, team = listOf(1, 2, 3), failCount = 1)
+        appendQuest(matchId, questNo = 2, leader = 2, team = listOf(1, 2, 3, 4), failCount = 1)
+        appendQuest(matchId, questNo = 3, leader = 3, team = listOf(4, 6, 7, 8), failCount = 1)
+
+        assertEquals(
+            "三次失败应先落成 FINISHED_EVIL",
+            MatchStatus.FINISHED_EVIL,
+            storedStatus(matchId)
+        )
+
+        // 撤销第 3 任务的失败结果 → 只剩 2 次失败
+        val thirdMission = database.matchEventDao().listActive(matchId.raw)
+            .first { it.id == "f3-mission" }
+        repository.retractEvent(matchId, EventId(thirdMission.id))
+
+        val expected = derivedStatus(matchId)
+        assertEquals(
+            "撤销后重放应只剩两次失败",
+            MatchStatus.IN_PROGRESS,
+            expected
+        )
+        assertEquals(
+            "matches.status 必须跟着重算（RT-004）",
+            expected,
+            storedStatus(matchId)
+        )
+    }
+
+    @Test
+    fun revisingQuestEventRecomputesMatchStatus() = runBlocking {
+        val matchId = createMatch()
+
+        appendQuest(matchId, questNo = 1, leader = 1, team = listOf(1, 2, 3), failCount = 1)
+        appendQuest(matchId, questNo = 2, leader = 2, team = listOf(1, 2, 3, 4), failCount = 1)
+        appendQuest(matchId, questNo = 3, leader = 3, team = listOf(4, 6, 7, 8), failCount = 1)
+        assertEquals(MatchStatus.FINISHED_EVIL, storedStatus(matchId))
+
+        // 把第 3 任务的失败牌改成 0 张 → 该任务成功 → 2 失败 1 成功 → IN_PROGRESS
+        val thirdMission = database.matchEventDao().listActive(matchId.raw)
+            .first { it.id == "f3-mission" }
+        repository.reviseEvent(
+            matchId = matchId,
+            targetEventId = EventId(thirdMission.id),
+            replacement = MissionResolved(
+                eventId = EventId("f3-mission-v2"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                questNo = 3,
+                teamSeats = listOf(4, 6, 7, 8),
+                teamSizeExpected = 4,
+                failCount = 0,
+                observedOutcome = MissionOutcome.SUCCESS
+            )
+        )
+
+        val expected = derivedStatus(matchId)
+        assertEquals("修订后重放应为 IN_PROGRESS", MatchStatus.IN_PROGRESS, expected)
+        assertEquals(
+            "修订同样必须触发状态重算（RT-004）",
+            expected,
+            storedStatus(matchId)
+        )
+    }
+
+    @Test
+    fun importBundleStoresDerivedStatusNotDraft() = runBlocking {
+        // 先在本库造一局 FINISHED_GOOD：3 次成功 + 刺杀未命中
+        val sourceMatch = createMatch()
+        appendWinningQuest(sourceMatch, questNo = 1, leader = 1, team = listOf(1, 2, 3))
+        appendWinningQuest(sourceMatch, questNo = 2, leader = 2, team = listOf(1, 2, 3, 4))
+        appendWinningQuest(sourceMatch, questNo = 3, leader = 3, team = listOf(4, 6, 7, 8))
+        repository.saveRoleAssignments(
+            sourceMatch,
+            listOf(
+                RoleAssignment(1, RoleId.MERLIN, RoleSource.REVEALED_AFTER_END, RevealState.REVEALED),
+                RoleAssignment(2, RoleId.LOYAL_SERVANT, RoleSource.REVEALED_AFTER_END, RevealState.REVEALED),
+                RoleAssignment(5, RoleId.ASSASSIN, RoleSource.REVEALED_AFTER_END, RevealState.REVEALED)
+            )
+        )
+        repository.appendEvent(
+            sourceMatch,
+            AssassinationRecorded(
+                eventId = EventId("miss-assassination"),
+                occurredOrder = 0,
+                recordedAt = 0L,
+                assassinSeat = 5,
+                targetSeat = 2,
+                hitMerlin = null
+            )
+        )
+        assertEquals(
+            "源对局应为好人胜",
+            MatchStatus.FINISHED_GOOD,
+            storedStatus(sourceMatch)
+        )
+
+        // 用源对局的内容做导入
+        val source = repository.getBundle(sourceMatch)!!
+        val imported = repository.importBundle(
+            com.roundtrace.app.core.data.ImportBundle(
+                config = source.config,
+                participants = source.participants,
+                roleAssignments = source.roleAssignments.values.toList(),
+                events = source.events,
+                revealedAt = source.revealedAt
+            )
+        )
+
+        assertNotEquals("导入必须新建对局", sourceMatch.raw, imported.raw)
+        assertEquals(
+            "导入后 matches.status 必须是重放派生值，不能落 DRAFT（RT-004）",
+            MatchStatus.FINISHED_GOOD,
+            storedStatus(imported)
+        )
+        assertEquals(
+            "导入后的派生状态与重放结果必须一致",
+            derivedStatus(imported),
+            storedStatus(imported)
+        )
+    }
 }

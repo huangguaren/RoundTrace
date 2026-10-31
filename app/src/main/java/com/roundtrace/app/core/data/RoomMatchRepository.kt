@@ -182,16 +182,8 @@ class RoomMatchRepository(
                 now = committedAt
             )
 
-            // 重放全部事件（含刚写入的），把终局状态回写到 matches.status
-            val newBundle = getBundle(matchId)
-            if (newBundle != null) {
-                val newState = ReplayEngine(reducer).replay(newBundle.toReconstructedMatch()).state
-                val currentStatus = matchDao.findById(matchId.raw)?.status
-                val newStatusName = newState.status.name
-                if (currentStatus != newStatusName) {
-                    matchDao.updateStatusOnly(matchId.raw, newStatusName, committedAt)
-                }
-            }
+            // 重放全部事件（含刚写入的），把派生状态回写到 matches.status（RT-004）
+            recomputeProjectionLocked(matchId)
 
             AppendResult(
                 matchId = matchId,
@@ -245,6 +237,8 @@ class RoomMatchRepository(
                 oldEventId = targetEventId.raw,
                 now = committedAt
             )
+            // 修订会改变历史事实，状态必须跟着重算（RT-004）
+            recomputeProjectionLocked(matchId)
             AppendResult(
                 matchId = matchId,
                 eventId = replacement.eventId,
@@ -267,6 +261,8 @@ class RoomMatchRepository(
             val rows = eventDao.markRetracted(matchId.raw, eventId.raw)
             if (rows == 1) {
                 eventDao.touchMatch(matchId.raw, committedAt)
+                // 撤销会改变历史事实，状态必须跟着重算（RT-004）
+                recomputeProjectionLocked(matchId)
             }
             rows
         }
@@ -428,6 +424,8 @@ class RoomMatchRepository(
             if (participantEntities.isNotEmpty()) participantDao.upsertAll(participantEntities)
             if (roleEntities.isNotEmpty()) roleDao.upsertAll(roleEntities)
             if (eventEntities.isNotEmpty()) eventDao.insertAll(eventEntities)
+            // 导入不能停在 DRAFT：状态必须由重放结果决定（RT-004）
+            recomputeProjectionLocked(newMatchId)
         }
         return newMatchId
     }
@@ -435,6 +433,25 @@ class RoomMatchRepository(
     // ————————————————————————————————————————————————————————
     // 内部工具
     // ————————————————————————————————————————————————————————
+
+    /**
+     * 把 `matches.status` 重新对齐到「事件重放派生状态」（RT-004）。
+     *
+     * 为什么必须统一：状态有四个写入点（追加 / 修订 / 撤销 / 导入），
+     * 任何一个漏掉都会让 `matches.status` 与事件事实脱节——
+     * 首页筛选、上帝视角开关、导出状态全部读这一列，脱节即表现为
+     * 「撤销了失败任务但首页仍显示已结束」。
+     *
+     * 硬约束：
+     * - **必须在事务内调用**，与触发它的写操作同生共死；
+     * - 必须用 `updateStatusOnly`，**不得**写 `revealedAt`
+     *   （否则会把已揭晓的对局打回未揭晓 —— RT-001 的老问题）。
+     */
+    private suspend fun recomputeProjectionLocked(matchId: MatchId) {
+        val bundle = getBundle(matchId) ?: return
+        val derived = ReplayEngine(reducer).replay(bundle.toReconstructedMatch()).state.status
+        matchDao.updateStatusOnly(matchId.raw, derived.name, now)
+    }
 
     private fun failed(matchId: MatchId, error: RepositoryError): AppendResult =
         AppendResult(matchId = matchId, eventId = null, occurredOrder = null, error = error)
