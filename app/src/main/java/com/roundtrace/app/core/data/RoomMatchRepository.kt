@@ -156,8 +156,6 @@ class RoomMatchRepository(
 
         val committedAt = now
         return database.withTransaction {
-            var order: Int
-
             // §9.3-18：首次提交某任务的提案时自动补建 QUEST_STARTED（同事务）
             if (event is TeamProposed && !hasQuestStarted(bundle.events, event.questNo)) {
                 val auto = com.roundtrace.app.core.model.QuestStarted(
@@ -167,18 +165,20 @@ class RoomMatchRepository(
                     questNo = event.questNo,
                     leaderSeat = event.leaderSeat
                 )
-                eventDao.appendWithOrder(
+                eventDao.appendWithSlot(
                     matchId = matchId.raw,
-                    entityProvider = { assigned ->
-                        codec.encode(auto, matchId, assigned)
+                    entityProvider = { slot ->
+                        codec.encode(auto, matchId, slot.occurredOrder, slot.logicalPosition, slot.revisionSeq)
                     },
                     now = committedAt
                 )
             }
 
-            order = eventDao.appendWithOrder(
+            val slot = eventDao.appendWithSlot(
                 matchId = matchId.raw,
-                entityProvider = { assigned -> codec.encode(event, matchId, assigned) },
+                entityProvider = { s ->
+                    codec.encode(event, matchId, s.occurredOrder, s.logicalPosition, s.revisionSeq)
+                },
                 now = committedAt
             )
 
@@ -188,7 +188,7 @@ class RoomMatchRepository(
             AppendResult(
                 matchId = matchId,
                 eventId = event.eventId,
-                occurredOrder = order,
+                occurredOrder = slot.occurredOrder,
                 issues = issues
             )
         }
@@ -226,15 +226,14 @@ class RoomMatchRepository(
 
         val committedAt = now
         return database.withTransaction {
-            val order = eventDao.reviseSupersede(
+            val slot = eventDao.reviseWithSlot(
                 matchId = matchId.raw,
-                newEntityProvider = { assigned ->
-                    // 修订链：新事件的 supersedesId 指向被替代事件（列以本处为准）
-                    codec.encode(replacement, matchId, assigned).copy(
-                        supersedesId = targetEventId.raw
-                    )
-                },
                 oldEventId = targetEventId.raw,
+                entityProvider = { s ->
+                    // 修订链：新事件的 supersedesId 指向被替代事件（列以本处为准）
+                    codec.encode(replacement, matchId, s.occurredOrder, s.logicalPosition, s.revisionSeq)
+                        .copy(supersedesId = targetEventId.raw)
+                },
                 now = committedAt
             )
             // 修订会改变历史事实，状态必须跟着重算（RT-004）
@@ -242,7 +241,7 @@ class RoomMatchRepository(
             AppendResult(
                 matchId = matchId,
                 eventId = replacement.eventId,
-                occurredOrder = order,
+                occurredOrder = slot.occurredOrder,
                 issues = issues
             )
         }

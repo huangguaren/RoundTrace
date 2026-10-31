@@ -39,7 +39,7 @@ import com.roundtrace.app.core.database.entity.RoleAssignmentEntity
         MatchDraftEntity::class,
         AnalysisReportEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 @TypeConverters(RoundTraceConverters::class)
@@ -78,6 +78,64 @@ abstract class RoundTraceDatabase : RoomDatabase() {
         }
 
         /**
+         * v3→v4（RT-003 Step 1）：拆分「逻辑顺序」与「写入序号」。
+         *
+         * 四条语句的顺序不能变：先加列 → 再回填 `logicalPosition` → 再回填 `revisionSeq`
+         * → 最后建索引。两条递归 CTE 都以 `supersedesId IS NULL` 为链根，
+         * 因此孤儿链（`supersedesId` 指向不存在的行）会落到 `COALESCE(..., occurredOrder)` /
+         * `COALESCE(..., 0)` 的兜底分支，**不会抛异常**。
+         *
+         * 写法说明：统一用 `\n` 字符串拼接而不是 Kotlin 原始字符串，
+         * 避免未来 SQL 里出现 `$` 时被当成模板插值（migration-plan §15.6-D4）。
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // ① 加列（NOT NULL 必须带 DEFAULT；与 @ColumnInfo(defaultValue = "0") 逐字一致）
+                db.execSQL(
+                    "ALTER TABLE `match_events` ADD COLUMN `logicalPosition` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `match_events` ADD COLUMN `revisionSeq` INTEGER NOT NULL DEFAULT 0"
+                )
+
+                // ② 回填 logicalPosition：沿 supersedesId 链取链根的 occurredOrder
+                db.execSQL(
+                    "WITH RECURSIVE chain(id, rootOrder) AS (\n" +
+                        "    SELECT id, occurredOrder FROM `match_events` WHERE supersedesId IS NULL\n" +
+                        "    UNION ALL\n" +
+                        "    SELECT child.id, chain.rootOrder\n" +
+                        "      FROM `match_events` AS child\n" +
+                        "      JOIN chain ON child.supersedesId = chain.id\n" +
+                        ")\n" +
+                        "UPDATE `match_events`\n" +
+                        "   SET logicalPosition = COALESCE(\n" +
+                        "         (SELECT rootOrder FROM chain WHERE chain.id = `match_events`.id),\n" +
+                        "         occurredOrder)"
+                )
+
+                // ③ 回填 revisionSeq：链深度 - 1（根 = 0）
+                db.execSQL(
+                    "WITH RECURSIVE chain(id, depth) AS (\n" +
+                        "    SELECT id, 0 FROM `match_events` WHERE supersedesId IS NULL\n" +
+                        "    UNION ALL\n" +
+                        "    SELECT child.id, chain.depth + 1\n" +
+                        "      FROM `match_events` AS child\n" +
+                        "      JOIN chain ON child.supersedesId = chain.id\n" +
+                        ")\n" +
+                        "UPDATE `match_events`\n" +
+                        "   SET revisionSeq = COALESCE(\n" +
+                        "         (SELECT depth FROM chain WHERE chain.id = `match_events`.id), 0)"
+                )
+
+                // ④ 读路径索引（IF NOT EXISTS 保证可重复执行）
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_match_events_matchId_logicalPosition_revisionSeq` " +
+                        "ON `match_events` (`matchId`, `logicalPosition`, `revisionSeq`)"
+                )
+            }
+        }
+
+        /**
          * 构造数据库实例。
          *
          * @param context 任意 Context（内部会取 applicationContext）
@@ -91,7 +149,7 @@ abstract class RoundTraceDatabase : RoomDatabase() {
             )
                 // 显式声明 WAL；不调用 fallbackToDestructiveMigration
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
 
         /** 内存库（仪器测试用）。 */

@@ -64,13 +64,24 @@ class EventCodec(
      * 把领域事件编码为实体。
      *
      * @param matchId 所属对局
-     * @param occurredOrder **由 DAO 分配的**顺序（领域事件的该字段恒为 0）
+     * @param occurredOrder **由 DAO 分配的**写入序号（领域事件的该字段恒为 0）
+     * @param logicalPosition 逻辑位置；默认等于 [occurredOrder]，
+     *        使**未改动的调用点**保持改造前的语义（RT-003 Step 1）
+     * @param revisionSeq 该位置被修订的次数；默认 0（原始版本）
      */
-    fun encode(event: MatchEvent, matchId: MatchId, occurredOrder: Int): MatchEventEntity =
+    fun encode(
+        event: MatchEvent,
+        matchId: MatchId,
+        occurredOrder: Int,
+        logicalPosition: Int = occurredOrder,
+        revisionSeq: Int = 0
+    ): MatchEventEntity =
         MatchEventEntity(
             id = event.eventId.raw,
             matchId = matchId.raw,
             occurredOrder = occurredOrder,
+            logicalPosition = logicalPosition,
+            revisionSeq = revisionSeq,
             phaseKey = phaseKeyOf(event),
             eventType = event.type.name,
             payloadVersion = PAYLOAD_VERSION,
@@ -235,7 +246,10 @@ class EventCodec(
         val payload = parsePayload(entity.payloadJson, entity.id)
         val base = BaseFields(
             eventId = EventId(entity.id),
-            occurredOrder = entity.occurredOrder,
+            // RT-003 Step 1：领域层的 occurredOrder 从 logicalPosition 取。
+            // Step 1 内两者对所有新建数据相等（编码时 logicalPosition 默认 = occurredOrder），
+            // 对历史含修订数据则不同——但读路径仍按列 occurredOrder 排序，故可观察行为不变。
+            occurredOrder = entity.logicalPosition,
             recordedAt = entity.recordedAt,
             visibility = visibilityOf(entity.visibility),
             supersedesId = entity.supersedesId?.let { EventId(it) },

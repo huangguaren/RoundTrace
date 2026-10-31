@@ -449,16 +449,18 @@ class RoomMatchRepositoryRobolectricTest {
         var threw = false
         try {
             // 绕过仓储前置校验，直接打 DAO：事务内必须先撤销成功才允许插入替代事件
-            database.matchEventDao().reviseSupersede(
+            database.matchEventDao().reviseWithSlot(
                 matchId = matchA.raw,
-                newEntityProvider = { order ->
+                oldEventId = bEvent.eventId!!.raw,
+                entityProvider = { slot ->
                     EventCodec().encode(
                         questStarted(1, "tx-new"),
                         matchA,
-                        order
+                        slot.occurredOrder,
+                        slot.logicalPosition,
+                        slot.revisionSeq
                     )
                 },
-                oldEventId = bEvent.eventId!!.raw,
                 now = baseEpochMs
             )
         } catch (e: IllegalStateException) {

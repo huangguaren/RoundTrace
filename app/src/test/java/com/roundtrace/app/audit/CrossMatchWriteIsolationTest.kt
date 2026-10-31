@@ -167,16 +167,18 @@ class CrossMatchWriteIsolationTest {
         var threw = false
         try {
             // 直接用 B 的事件 id 去走 A 局的修订事务：撤销必命中 0 行
-            database.matchEventDao().reviseSupersede(
+            database.matchEventDao().reviseWithSlot(
                 matchId = matchA.raw,
-                newEntityProvider = { order ->
+                oldEventId = bEventId.raw,
+                entityProvider = { slot ->
                     codec.encode(
                         AuditEvents.questStarted("a-shadow", questNo = 1, leaderSeat = 2),
                         matchA,
-                        order
+                        slot.occurredOrder,
+                        slot.logicalPosition,
+                        slot.revisionSeq
                     )
                 },
-                oldEventId = bEventId.raw,
                 now = clock.nowMs
             )
         } catch (e: IllegalStateException) {

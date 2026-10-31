@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.roundtrace.app.core.database.EventCodec
+import com.roundtrace.app.core.database.dao.EventSlot
 import com.roundtrace.app.core.database.RoundTraceDatabase
 import com.roundtrace.app.core.database.entity.MatchEntity
 import com.roundtrace.app.core.database.entity.MatchEventEntity
@@ -68,18 +69,18 @@ class MatchDaoTest {
         )
     }
 
-    private suspend fun appendQuestStarted(questNo: Int, now: Long): Int =
-        database.matchEventDao().appendWithOrder(
+    private suspend fun appendQuestStarted(questNo: Int, now: Long): EventSlot =
+        database.matchEventDao().appendWithSlot(
             matchId = matchId.raw,
-            entityProvider = { order ->
+            entityProvider = { slot ->
                 val event = QuestStarted(
-                    eventId = EventId("d01-e-$questNo-$order"),
+                    eventId = EventId("d01-e-$questNo-${slot.occurredOrder}"),
                     occurredOrder = 0,
                     recordedAt = now,
                     questNo = questNo,
                     leaderSeat = 1
                 )
-                codec.encode(event, matchId, order)
+                codec.encode(event, matchId, slot.occurredOrder, slot.logicalPosition, slot.revisionSeq)
             },
             now = now
         )
@@ -90,11 +91,11 @@ class MatchDaoTest {
 
         val assigned = mutableListOf<Int>()
         repeat(20) { index ->
-            assigned += appendQuestStarted(questNo = 1, now = index.toLong())
+            assigned += appendQuestStarted(questNo = 1, now = index.toLong()).occurredOrder
         }
 
         assertEquals(
-            "appendWithOrder 必须返回 1..20",
+            "appendWithSlot 必须返回 1..20",
             (1..20).toList(),
             assigned
         )
@@ -126,7 +127,7 @@ class MatchDaoTest {
     @Test
     fun d01_retractedEventsAreExcludedFromReadPath() = runTest {
         insertMatch()
-        val order = appendQuestStarted(1, 1L)
+        val order = appendQuestStarted(1, 1L).occurredOrder
         val stored = database.matchEventDao().listActive(matchId.raw)
         val target = stored.first { it.occurredOrder == order }
 
@@ -151,7 +152,7 @@ class MatchDaoTest {
         val entity = database.matchDao().findById(matchId.raw)
         assertNotNull(entity)
         assertEquals(
-            "appendWithOrder 必须更新 matches.updatedAt",
+            "appendWithSlot 必须更新 matches.updatedAt",
             500L,
             entity?.updatedAt
         )

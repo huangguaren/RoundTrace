@@ -3,6 +3,7 @@ package com.roundtrace.app.database
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.roundtrace.app.core.database.EventCodec
+import com.roundtrace.app.core.database.dao.EventSlot
 import com.roundtrace.app.core.database.RoundTraceDatabase
 import com.roundtrace.app.core.database.entity.MatchEntity
 import com.roundtrace.app.core.model.EventId
@@ -81,12 +82,12 @@ class MatchDaoRobolectricTest {
      * 追加一条 `QUEST_STARTED`。
      *
      * 传进来的领域事件 `occurredOrder` 恒为 0——这是领域层的契约，
-     * 真实 order 只能由 DAO 的 `COALESCE(MAX(occurredOrder),0)+1` 分配。
+     * 真实槽位只能由 DAO 分配（`MAX(occurredOrder)+1` / `MAX(logicalPosition)+1`）。
      */
-    private suspend fun appendQuestStarted(tag: Int, now: Long): Int =
-        database.matchEventDao().appendWithOrder(
+    private suspend fun appendQuestStarted(tag: Int, now: Long): EventSlot =
+        database.matchEventDao().appendWithSlot(
             matchId = matchId.raw,
-            entityProvider = { order ->
+            entityProvider = { slot ->
                 val event = QuestStarted(
                     eventId = EventId("d01-jvm-$tag"),
                     occurredOrder = 0,
@@ -94,7 +95,7 @@ class MatchDaoRobolectricTest {
                     questNo = 1,
                     leaderSeat = 1
                 )
-                codec.encode(event, matchId, order)
+                codec.encode(event, matchId, slot.occurredOrder, slot.logicalPosition, slot.revisionSeq)
             },
             now = now
         )
@@ -107,10 +108,12 @@ class MatchDaoRobolectricTest {
     fun d01_twentyEventsHaveContiguousOrderFromOne() = runBlocking {
         insertMatch()
 
-        val assigned = (0 until 20).map { index -> appendQuestStarted(index, index.toLong()) }
+        val assigned = (0 until 20).map { index ->
+            appendQuestStarted(index, index.toLong()).occurredOrder
+        }
 
         assertEquals(
-            "appendWithOrder 必须依次返回 1..20，实际=$assigned",
+            "appendWithSlot 必须依次返回 1..20，实际=$assigned",
             (1..20).toList(),
             assigned
         )
@@ -133,14 +136,14 @@ class MatchDaoRobolectricTest {
         insertMatch()
         appendQuestStarted(0, 1L)
         appendQuestStarted(1, 2L)
-        val third = appendQuestStarted(2, 3L)
+        val third = appendQuestStarted(2, 3L).occurredOrder
 
         // 撤销中间那条（模拟用户改错）——order 计数器不回退，保证审计链不撞号
         val middle = database.matchEventDao().listActive(matchId.raw)
             .first { it.occurredOrder == 2 }
         database.matchEventDao().markRetracted(matchId.raw, middle.id)
 
-        val fourth = appendQuestStarted(3, 4L)
+        val fourth = appendQuestStarted(3, 4L).occurredOrder
         assertEquals("撤销后新事件仍应顺延", 4, fourth)
 
         val activeOrders = database.matchEventDao().listActive(matchId.raw).map { it.occurredOrder }
@@ -165,7 +168,7 @@ class MatchDaoRobolectricTest {
         appendQuestStarted(0, 500L)
         val entity = database.matchDao().findById(matchId.raw)
         assertNotNull(entity)
-        assertEquals("appendWithOrder 必须更新 matches.updatedAt", 500L, entity?.updatedAt)
+        assertEquals("appendWithSlot 必须更新 matches.updatedAt", 500L, entity?.updatedAt)
     }
 
     // ————————————————————————————————————————————————————————
