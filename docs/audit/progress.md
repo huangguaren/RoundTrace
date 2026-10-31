@@ -292,3 +292,65 @@ Step 1 的处置是**新增列 + 开始写对值**，不动读路径，因此行
 5. **`decode` 的 `occurredOrder` 已改为取 `logicalPosition`**：Step 1 内两者对所有新建数据相等，
    对历史含修订数据则不等 —— 读路径仍按列 `occurredOrder` 排序，故行为不变；
    但**任何依赖「领域 occurredOrder == 列 occurredOrder」的新代码都会踩坑**，Step 3 前需注意。
+
+---
+
+## Phase 2 修正：Step 1 读语义回退（`7fd8758`）
+
+`759e133` 里我把 `EventCodec.decode` 的领域 `occurredOrder` 改成了 `logicalPosition`，
+**这提前切了读路径**，违反 Step 1「行为与今天完全一致」的定义。已在 `7fd8758` 回退。
+
+### 为什么必须回退
+
+`ReplayEngine` 是**按领域 `occurredOrder`** 做过滤与排序的：
+
+```kotlin
+.filter { upTo == null || it.occurredOrder <= upTo }
+.sortedWith(compareBy({ it.occurredOrder }, { it.recordedAt }, { it.eventId.raw }))
+```
+
+一旦 `decode` 改指 `logicalPosition`：
+
+1. **`upTo` 语义提前改变** —— 一条「逻辑位置 5 / 写入序号 6」的修订事件会被
+   `replay(upTo = 5)` 算进去（今天不会）。这属于 Step 3 才允许定义的行为。
+2. **升级即改变历史解读** —— v3 老数据迁移后，任何一次 `recomputeProjectionLocked`
+   都可能让对局状态自己变；而 Step 1 承诺升级后行为不变。
+
+### 改法
+
+- `decode` 仍取 `entity.occurredOrder`；`logicalPosition` 继续**照常写入**，但**全库零读取**。
+- 新增冻结测试 `step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition`
+  （`EventSlotAssignmentTest`）：断言修订后新事件的领域 `occurredOrder == 列 occurredOrder`
+  且 `!= logicalPosition`、`replay(upTo=5)` 不含它而 `upTo=6` 才含、bundle 顺序仍按列（修订排末尾）。
+  **Step 3 切读路径时它会变红——那正是切换信号，届时改写期望值并去掉函数名里的 `step1_`。**
+
+### 「全库无任何地方读 logicalPosition」的 grep 证据
+
+```bash
+grep -rn "logicalPosition" app/src/main --include=*.kt
+```
+
+主代码里的出现**只剩五类**，没有一类是「读事件行来做展示或排序」：
+
+| 位置 | 性质 |
+|---|---|
+| `MatchEventEntity.kt` 字段声明 + `Index(...)` | 结构定义 |
+| `EventCodec.encode` 的 `logicalPosition = logicalPosition` | **写入** |
+| `MatchEventDao.nextLogicalPosition`（`SELECT MAX(logicalPosition)+1`） | 写入侧分配 |
+| `MatchEventDao.findRevisionSeed`（投影 `logicalPosition, revisionSeq`） | 写入侧种子（用于复用位置 + 递增 revisionSeq） |
+| `RoundTraceDatabase.MIGRATION_3_4` 的 ALTER / UPDATE / CREATE INDEX | 迁移 DDL |
+
+唯一的 `entity.logicalPosition` 字面出现在 `EventCodec.kt` 的**注释**里（Step 3 的提示），
+不是代码。
+
+### 验证
+
+```bash
+./gradlew clean
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+BUILD SUCCESSFUL in 3m 22s
+TOTAL tests=261 failures=0
+APK 20,460,378 bytes
+```
+
+用例数 260 → **261**（+1 冻结测试）。
