@@ -20,6 +20,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.roundtrace.app.R
 import com.roundtrace.app.core.model.ProposalDecision
@@ -69,6 +71,8 @@ fun RecordScreen(
     onOpenReplay: () -> Unit = {}
 ) {
     var sheet by rememberSaveable { mutableStateOf(RecordSheet.NONE) }
+    var showEditSeats by rememberSaveable { mutableStateOf(false) }
+    var showRollbackConfirm by rememberSaveable { mutableStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     // 撤销反馈 → Snackbar（T49②）
@@ -161,7 +165,10 @@ fun RecordScreen(
                     item {
                         QuestStepper(
                             outcomes = quest.slots,
-                            currentQuestNo = quest.questNo
+                            currentQuestNo = quest.questNo,
+                            onQuestClick = { clicked ->
+                                if (clicked < quest.questNo) showRollbackConfirm = clicked
+                            }
                         )
                     }
                     item {
@@ -169,6 +176,11 @@ fun RecordScreen(
                             status = state.saveStatus,
                             onRetry = { onAction(RecordAction.SaveDraft) }
                         )
+                    }
+                    item {
+                        TextButton(onClick = { showEditSeats = true }) {
+                            Text("对局设置")
+                        }
                     }
                     state.currentProposal?.let { proposal ->
                         item {
@@ -216,7 +228,20 @@ fun RecordScreen(
                         }
                     }
                     item {
-                        RecordTimelineSection(entries = state.timeline)
+                        RecordTimelineSection(
+                            entries = state.timeline,
+                            onEntryClick = { entry ->
+                                when (entry.eventType) {
+                                    com.roundtrace.app.core.model.EventType.MISSION_RESOLVED ->
+                                        sheet = RecordSheet.MISSION
+                                    com.roundtrace.app.core.model.EventType.TEAM_VOTE_RECORDED ->
+                                        sheet = RecordSheet.VOTE
+                                    com.roundtrace.app.core.model.EventType.TEAM_PROPOSED ->
+                                        sheet = RecordSheet.PROPOSAL
+                                    else -> {}
+                                }
+                            }
+                        )
                     }
                 }
 
@@ -230,7 +255,9 @@ fun RecordScreen(
                         teamSeats = state.draft.teamSeats,
                         canSubmit = state.draft.teamSeats.size == quest.expectedTeamSize &&
                             state.draft.leaderSeat != null,
-                        onSelectLeader = { onAction(RecordAction.SelectLeader(it)) },
+                        seatLabels = state.seatLabels,
+                        seatAvatars = state.seatAvatars,
+                        onSelectLeader = { seat -> onAction(RecordAction.SelectLeader(seat)) },
                         onToggleTeamSeat = { onAction(RecordAction.ToggleTeamSeat(it)) },
                         onSaveDraft = { onAction(RecordAction.SaveDraft) },
                         onSubmit = {
@@ -253,6 +280,7 @@ fun RecordScreen(
                             decision = state.voteDecision,
                             halfCount = state.halfCount,
                             exceedsPlayers = state.voteExceedsPlayers,
+                            seatAvatars = state.seatAvatars,
                             onSeatVote = { seat, vote -> onAction(RecordAction.SetVote(seat, vote)) },
                             onSummaryChange = { approve, reject ->
                                 onAction(RecordAction.SetVoteSummary(approve, reject))
@@ -284,6 +312,41 @@ fun RecordScreen(
                     )
 
                     RecordSheet.NONE -> Unit
+                }
+
+                if (showEditSeats) {
+                    EditSeatsDialog(
+                        participants = state.participants,
+                        onDismiss = { showEditSeats = false },
+                        onSave = { updated ->
+                            onAction(RecordAction.UpdateParticipants(updated))
+                            showEditSeats = false
+                        }
+                    )
+                }
+
+                if (showRollbackConfirm > 0) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { showRollbackConfirm = 0 },
+                        title = { Text("回到第 ${showRollbackConfirm} 任务？") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("回滚后：")
+                                Text("• 第 ${showRollbackConfirm + 1} 任务及之后的提案、投票、任务牌记录将被删除", style = MaterialTheme.typography.bodySmall)
+                                Text("• 第 ${showRollbackConfirm} 任务的记录保留，可直接修改", style = MaterialTheme.typography.bodySmall)
+                                Text("• 如果只是查看不修改，点取消即可", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                onAction(RecordAction.RollbackToQuest(showRollbackConfirm))
+                                showRollbackConfirm = 0
+                            }) { Text("回滚", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showRollbackConfirm = 0 }) { Text("取消") }
+                        }
+                    )
                 }
             }
         }
@@ -462,4 +525,47 @@ private fun IssueHints(state: RecordUiState) {
             )
         }
     }
+}
+
+@Composable
+private fun EditSeatsDialog(
+    participants: List<com.roundtrace.app.core.model.Participant>,
+    onDismiss: () -> Unit,
+    onSave: (List<com.roundtrace.app.core.model.Participant>) -> Unit
+) {
+    var names by remember {
+        mutableStateOf(participants.associate { it.seat to (it.displayName ?: "") })
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("对局设置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Dimens.Spacing8)) {
+                Text(
+                    "可改座位名。改人数/角色构成需新建对局。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                participants.forEach { p ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("${p.seat}号", modifier = Modifier.padding(end = Dimens.Spacing8))
+                        androidx.compose.material3.OutlinedTextField(
+                            value = names[p.seat] ?: "",
+                            onValueChange = { names = names + (p.seat to it) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                onSave(participants.map { p -> p.copy(displayName = names[p.seat]?.takeIf { it.isNotBlank() }) })
+            }) { Text("保存") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }

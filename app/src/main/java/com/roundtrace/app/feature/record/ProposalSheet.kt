@@ -14,7 +14,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
 import com.roundtrace.app.core.ui.component.SeatPicker
 import com.roundtrace.app.core.ui.theme.ButtonShape
@@ -38,7 +40,9 @@ fun ProposalSheet(
     leaderSeat: Int?,
     teamSeats: Set<Int>,
     canSubmit: Boolean,
-    onSelectLeader: (Int) -> Unit,
+    seatLabels: Map<Int, String?> = emptyMap(),
+    seatAvatars: Map<Int, String?> = emptyMap(),
+    onSelectLeader: (Int?) -> Unit,
     onToggleTeamSeat: (Int) -> Unit,
     onSaveDraft: () -> Unit,
     onSubmit: () -> Unit,
@@ -61,59 +65,54 @@ fun ProposalSheet(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // —— 队长 ——
-            Text(
-                text = stringResource(R.string.proposal_sheet_leader_section),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // —— 单网格选队长+队员：第一次点选队长，之后点其他人选队员 ——
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (leaderSeat == null) "点选队长" else "队长 ${leaderSeat} 号 · 再点选 ${expectedTeamSize - teamSeats.size} 名队员",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (leaderSeat != null) {
+                    Text(
+                        text = stringResource(R.string.record_team_count, teamSeats.size, expectedTeamSize),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (teamSeats.size == expectedTeamSize)
+                            LocalExtendedColors.current.success
+                        else
+                            LocalExtendedColors.current.accent
+                    )
+                }
+            }
+            val combinedSelected = teamSeats  // 队长不高亮，只显示星标
             SeatPicker(
                 playerCount = playerCount,
-                selectedSeats = leaderSeat?.let { setOf(it) } ?: emptySet(),
-                onSeatClick = onSelectLeader,
-                singleSelect = true,
+                selectedSeats = combinedSelected,
+                onSeatClick = { seat ->
+                    if (leaderSeat == null) {
+                        onSelectLeader(seat)  // 第一次选队长
+                    } else if (seat == leaderSeat) {
+                        onSelectLeader(null)  // 点当前队长=取消
+                    } else {
+                        onToggleTeamSeat(seat)  // 点其他人=选队员
+                    }
+                },
+                singleSelect = false,
+                seatLabels = seatLabels,
+                seatAvatars = seatAvatars,
                 badges = leaderSeat?.let { mapOf(it to stringResource(R.string.seat_role_leader)) }
                     ?: emptyMap()
             )
 
-            // —— 队员 ——
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = stringResource(R.string.proposal_sheet_team_section),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = stringResource(
-                        R.string.record_team_count,
-                        teamSeats.size,
-                        expectedTeamSize
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (teamSeats.size == expectedTeamSize) {
-                        LocalExtendedColors.current.success
-                    } else {
-                        LocalExtendedColors.current.accent
-                    }
-                )
-            }
-            SeatPicker(
-                playerCount = playerCount,
-                selectedSeats = teamSeats,
-                onSeatClick = onToggleTeamSeat,
-                singleSelect = false
+            Text(
+                text = if (!canSubmit) stringResource(R.string.proposal_sheet_blocked) else " ",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.heightIn(min = 20.dp)
             )
-
-            if (!canSubmit) {
-                Text(
-                    text = stringResource(R.string.proposal_sheet_blocked),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

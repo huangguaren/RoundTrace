@@ -107,6 +107,12 @@ data class RecordUiState(
     val timeline: List<TimelineEntry> = emptyList(),
     val playerCount: Int = 0,
     val mySeat: Int? = null,
+    /** 座位号 → 自定义名字（从创建对局时带入）。 */
+    val seatLabels: Map<Int, String?> = emptyMap(),
+    /** 座位头像 URI。 */
+    val seatAvatars: Map<Int, String?> = emptyMap(),
+    /** 完整 participants（用于编辑座位名）。 */
+    val participants: List<com.roundtrace.app.core.model.Participant> = emptyList(),
     /** 当前/最近一次提案（ProposalCard 用） */
     val currentProposal: ProposalUiModel? = null,
     /** 半数票（`playerCount / 2`），由 ViewModel 经规则侧口径给出 */
@@ -143,7 +149,7 @@ data class RecordUiState(
  */
 sealed interface RecordAction {
 
-    data class SelectLeader(val seat: Int) : RecordAction
+    data class SelectLeader(val seat: Int?) : RecordAction
 
     data class ToggleTeamSeat(val seat: Int) : RecordAction
 
@@ -175,6 +181,15 @@ sealed interface RecordAction {
 
     /** 撤销最近一条事件。 */
     data object Undo : RecordAction
+
+    /** 删除指定事件（时间线长按/点击删除）。 */
+    data class DeleteEvent(val eventId: com.roundtrace.app.core.model.EventId) : RecordAction
+
+    /** 更新座位名/头像（对局进行中编辑）。 */
+    data class UpdateParticipants(val participants: List<com.roundtrace.app.core.model.Participant>) : RecordAction
+
+    /** 回滚到指定任务：删除该任务之后的所有事件。 */
+    data class RollbackToQuest(val questNo: Int) : RecordAction
 
     /** 清空撤销反馈（UI 展示完 Snackbar 后调用）。 */
     data object ClearUndoFeedback : RecordAction

@@ -1,5 +1,6 @@
 package com.roundtrace.app.feature.record
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,16 +9,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Timeline
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
+import com.roundtrace.app.core.model.EventId
 import com.roundtrace.app.core.replay.TimelineEntry
 import com.roundtrace.app.core.ui.component.EmptyState
 import com.roundtrace.app.core.ui.theme.CardShape
@@ -29,10 +40,13 @@ import com.roundtrace.app.core.ui.theme.LocalExtendedColors
  *
  * 复用 `TimelineBuilder` 产出的 [TimelineEntry]，与复盘页共用同一份中间模型。
  * **未记录字段必须显示「—— 未记录」**，不能留空白（DESIGN_SPEC §4.8）。
+ *
+ * 点卡片右上角删除按钮可删除该条事件（及其后续重算）。
  */
 @Composable
 fun RecordTimelineSection(
     entries: List<TimelineEntry>,
+    onEntryClick: ((TimelineEntry) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -56,16 +70,19 @@ fun RecordTimelineSection(
         }
 
         entries.forEach { entry ->
-            TimelineRow(entry = entry)
+            TimelineRow(entry = entry, onClick = { onEntryClick?.invoke(entry) })
         }
     }
 }
 
 @Composable
-private fun TimelineRow(entry: TimelineEntry) {
+private fun TimelineRow(entry: TimelineEntry, onClick: () -> Unit) {
     val extended = LocalExtendedColors.current
+
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
         horizontalArrangement = Arrangement.spacedBy(Dimens.Spacing8)
     ) {
         // 左侧竖线 + 节点（DESIGN_SPEC §4.8）

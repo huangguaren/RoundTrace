@@ -904,17 +904,15 @@ internal object AvalonStateMachine {
             }
         )
 
-        // 未核实任务不计数（T20④）
-        if (verified) {
-            when (finalOutcome) {
-                MissionOutcome.SUCCESS -> nextState =
-                    nextState.copy(goodSuccessCount = nextState.goodSuccessCount + 1)
+        // 任务结果明确就计数（verified 只影响"是否需要复核"，不阻断终局判定）
+        when (finalOutcome) {
+            MissionOutcome.SUCCESS -> nextState =
+                nextState.copy(goodSuccessCount = nextState.goodSuccessCount + 1)
 
-                MissionOutcome.FAILED -> nextState =
-                    nextState.copy(evilFailureCount = nextState.evilFailureCount + 1)
+            MissionOutcome.FAILED -> nextState =
+                nextState.copy(evilFailureCount = nextState.evilFailureCount + 1)
 
-                MissionOutcome.UNKNOWN -> Unit
-            }
+            MissionOutcome.UNKNOWN -> Unit
         }
 
         return nextState

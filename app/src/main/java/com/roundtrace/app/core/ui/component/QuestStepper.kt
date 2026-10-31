@@ -1,6 +1,7 @@
 package com.roundtrace.app.core.ui.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,7 +58,8 @@ fun QuestStepper(
     outcomes: List<QuestSlot>,
     currentQuestNo: Int?,
     modifier: Modifier = Modifier,
-    compact: Boolean = false
+    compact: Boolean = false,
+    onQuestClick: ((Int) -> Unit)? = null
 ) {
     val extended = LocalExtendedColors.current
     val scheme = MaterialTheme.colorScheme
@@ -93,7 +95,10 @@ fun QuestStepper(
                 else -> null
             }
 
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = if (onQuestClick != null && !compact) Modifier.clickable { onQuestClick(questNo) } else Modifier
+            ) {
                 Box(
                     modifier = Modifier
                         .size(nodeSize)

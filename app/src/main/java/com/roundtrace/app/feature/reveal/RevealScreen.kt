@@ -2,6 +2,7 @@ package com.roundtrace.app.feature.reveal
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -98,11 +99,13 @@ fun RevealScreen(
         }
 
         // 逐座位填角色
+        val takenRoles = state.rows.filter { it.roleId != RoleId.UNKNOWN }.map { it.roleId }.toSet()
         items(state.rows.size) { index ->
             val row = state.rows[index]
             RevealRow(
                 seat = row.seat,
                 roleId = row.roleId,
+                takenRoles = takenRoles - row.roleId,
                 onRoleSelected = { onAction(RevealAction.SetSeatRole(row.seat, it)) }
             )
         }
@@ -204,6 +207,7 @@ fun RevealScreen(
 private fun RevealRow(
     seat: Int,
     roleId: RoleId,
+    takenRoles: Set<RoleId>,
     onRoleSelected: (RoleId) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -227,35 +231,45 @@ private fun RevealRow(
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            OutlinedButton(
-                onClick = { expanded = true },
-                shape = ButtonShape,
-                modifier = Modifier.heightIn(min = Dimens.MinTouchTarget)
-            ) {
-                Text(
-                    text = if (roleId == RoleId.UNKNOWN) {
-                        stringResource(R.string.reveal_role_unknown)
-                    } else {
-                        roleDisplayName(roleId)
-                    }
-                )
-            }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.reveal_role_unknown)) },
-                    onClick = {
-                        onRoleSelected(RoleId.UNKNOWN)
-                        expanded = false
-                    }
-                )
-                REVEALABLE_ROLES.forEach { role ->
+            Box {
+                OutlinedButton(
+                    onClick = { expanded = true },
+                    shape = ButtonShape,
+                    modifier = Modifier.heightIn(min = Dimens.MinTouchTarget)
+                ) {
+                    Text(
+                        text = if (roleId == RoleId.UNKNOWN) {
+                            stringResource(R.string.reveal_role_unknown)
+                        } else {
+                            roleDisplayName(roleId)
+                        }
+                    )
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                     DropdownMenuItem(
-                        text = { Text(text = roleDisplayName(role)) },
+                        text = { Text(text = stringResource(R.string.reveal_role_unknown)) },
                         onClick = {
-                            onRoleSelected(role)
+                            onRoleSelected(RoleId.UNKNOWN)
                             expanded = false
                         }
                     )
+                    REVEALABLE_ROLES.forEach { role ->
+                        val taken = role in takenRoles
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = roleDisplayName(role),
+                                    color = if (taken) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                    else MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            enabled = !taken,
+                            onClick = {
+                                onRoleSelected(role)
+                                expanded = false
+                            }
+                        )
+                    }
                 }
             }
         }

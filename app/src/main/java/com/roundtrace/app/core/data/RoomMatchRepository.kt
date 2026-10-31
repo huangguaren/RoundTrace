@@ -182,6 +182,17 @@ class RoomMatchRepository(
                 now = committedAt
             )
 
+            // 重放全部事件（含刚写入的），把终局状态回写到 matches.status
+            val newBundle = getBundle(matchId)
+            if (newBundle != null) {
+                val newState = ReplayEngine(reducer).replay(newBundle.toReconstructedMatch()).state
+                val currentStatus = matchDao.findById(matchId.raw)?.status
+                val newStatusName = newState.status.name
+                if (currentStatus != newStatusName) {
+                    matchDao.updateStatus(matchId.raw, newStatusName, null, committedAt)
+                }
+            }
+
             AppendResult(
                 matchId = matchId,
                 eventId = event.eventId,
@@ -307,6 +318,26 @@ class RoomMatchRepository(
                 configJson = Mapping.encodeConfig(config),
                 now = now
             )
+        }
+    }
+
+    override suspend fun updateParticipants(
+        matchId: MatchId,
+        participants: List<com.roundtrace.app.core.model.Participant>
+    ) {
+        val existing = participantDao.listByMatch(matchId.raw)
+        val bySeat = existing.associateBy { it.seatNumber }
+        val updated = participants.map { p ->
+            val old = bySeat[p.seat]
+            Mapping.toParticipantEntity(
+                participantId = old?.id ?: idGenerator.newId(),
+                matchId = matchId,
+                participant = p
+            )
+        }
+        database.withTransaction {
+            participantDao.upsertAll(updated)
+            matchDao.touch(matchId.raw, now)
         }
     }
 

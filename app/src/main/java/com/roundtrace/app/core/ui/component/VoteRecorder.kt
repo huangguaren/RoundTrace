@@ -1,9 +1,11 @@
 package com.roundtrace.app.core.ui.component
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -21,15 +23,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
 import com.roundtrace.app.core.model.ProposalDecision
 import com.roundtrace.app.core.model.TeamVoteChoice
@@ -67,6 +74,7 @@ fun VoteRecorder(
     exceedsPlayers: Boolean,
     onSeatVote: (Int, TeamVoteChoice) -> Unit,
     onSummaryChange: (Int?, Int?) -> Unit,
+    seatAvatars: Map<Int, String?> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     var mode by rememberSaveable { mutableStateOf(VoteRecorderMode.PER_SEAT) }
@@ -103,6 +111,7 @@ fun VoteRecorder(
             VoteRecorderMode.PER_SEAT -> PerSeatVotes(
                 playerCount = playerCount,
                 votesBySeat = votesBySeat,
+                seatAvatars = seatAvatars,
                 onSeatVote = onSeatVote
             )
 
@@ -140,6 +149,7 @@ fun VoteRecorder(
 private fun PerSeatVotes(
     playerCount: Int,
     votesBySeat: Map<Int, TeamVoteChoice>,
+    seatAvatars: Map<Int, String?>,
     onSeatVote: (Int, TeamVoteChoice) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Dimens.Spacing8)) {
@@ -153,6 +163,7 @@ private fun PerSeatVotes(
                     VoteSeatCell(
                         seat = seat,
                         vote = vote,
+                        avatarUri = seatAvatars[seat],
                         onClick = { onSeatVote(seat, nextVote(vote)) },
                         modifier = Modifier.weight(1f)
                     )
@@ -169,6 +180,7 @@ private fun PerSeatVotes(
 private fun VoteSeatCell(
     seat: Int,
     vote: TeamVoteChoice,
+    avatarUri: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -180,12 +192,12 @@ private fun VoteSeatCell(
     }
     val container = when (vote) {
         TeamVoteChoice.APPROVE -> scheme.primaryContainer
-        TeamVoteChoice.REJECT -> scheme.errorContainer
+        TeamVoteChoice.REJECT -> Color(0xFFBBDEFB) // 浅蓝
         TeamVoteChoice.UNKNOWN -> scheme.surfaceVariant
     }
     val content = when (vote) {
         TeamVoteChoice.APPROVE -> scheme.onPrimaryContainer
-        TeamVoteChoice.REJECT -> scheme.onErrorContainer
+        TeamVoteChoice.REJECT -> Color(0xFF0D47A1) // 深蓝
         TeamVoteChoice.UNKNOWN -> scheme.onSurfaceVariant
     }
     val description = stringResource(R.string.vote_seat_description, seat, label)
@@ -202,21 +214,52 @@ private fun VoteSeatCell(
         color = container,
         contentColor = content
     ) {
-        Column(
-            modifier = Modifier.padding(Dimens.Spacing4),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = seat.toString(),
-                style = MaterialTheme.typography.displaySmall,
-                color = content
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = content
-            )
+        Box(contentAlignment = Alignment.Center) {
+            if (avatarUri != null) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val bmp = remember(avatarUri) {
+                    runCatching {
+                        context.contentResolver.openInputStream(android.net.Uri.parse(avatarUri))?.use {
+                            android.graphics.BitmapFactory.decodeStream(it)
+                        }
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier.padding(Dimens.Spacing4),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(text = seat.toString(), style = MaterialTheme.typography.displaySmall, color = content)
+                        Text(text = label, style = MaterialTheme.typography.labelMedium, color = content)
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier.padding(Dimens.Spacing4),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(text = seat.toString(), style = MaterialTheme.typography.displaySmall, color = content)
+                    Text(text = label, style = MaterialTheme.typography.labelMedium, color = content)
+                }
+            }
         }
     }
 }

@@ -119,17 +119,15 @@ fun MissionOutcomeSelector(
             // —— 实时规则判定文案（T48③）——
             val ruleText = when (derivedOutcome) {
                 MissionOutcome.SUCCESS -> stringResource(
-                    R.string.mission_rule_line,
+                    R.string.mission_rule_line_success,
                     questNo,
-                    failThreshold,
-                    stringResource(R.string.mission_rule_success)
+                    failThreshold
                 )
 
                 MissionOutcome.FAILED -> stringResource(
-                    R.string.mission_rule_line,
+                    R.string.mission_rule_line_failed,
                     questNo,
-                    failThreshold,
-                    stringResource(R.string.mission_rule_failed)
+                    failThreshold
                 )
 
                 MissionOutcome.UNKNOWN, null -> stringResource(R.string.mission_rule_unknown)

@@ -513,3 +513,26 @@ grep -rn "RoleId\." app/src/main/java/com/roundtrace/app/feature app/src/main/ja
 **理由**：ARCHITECTURE §9.3-7 给的是「入口条件」，而「快照能否构建」是纯数据能力。
 把两者混成一个判断，会让「已揭晓但未终局」的对局无法做 K09 这类回归测试。
 UI 只能通过 `canOpenGodView` 进入（`PerspectiveSwitcher` 禁用态 + `ReplayViewModel` 二次拦截）。
+
+### B34. 任务「结果明确即计数」，与 `verified` 解耦（2026-10-31 主理人裁决，废止 T20④）
+
+**背景**：原规则 T20④ 要求「未核实任务不计数」——即队伍与已通过提案不一致、或队伍不完整时，
+即使失败牌数明确也不计入 `goodSuccessCount` / `evilFailureCount`。实机使用中暴露出问题：
+现场记不全队伍是常态（录入层本来就允许队员不完整），一旦不完整，整局可能**永远无法判出胜负**，
+时间线看着完整、结局却卡在「进行中」。
+
+**决策**：
+- `AvalonReducer` 不再以 `verified` 作为计数闸门；只要 `outcome != UNKNOWN`（失败牌数已知，
+  或用户记录了观察结果）就累加计数；
+- `verified` 降级为**可复核性标记**：继续驱动 `integrity = NEEDS_REVIEW`、`IssueHints` 提示
+  与导入校验，但不再影响胜负推进；
+- `outcome == UNKNOWN`（既无失败牌数、也无观察结果）仍然不计数。
+
+**理由**：阿瓦隆里「任务成功/失败」本身就是公开信息，失败牌张数才是秘密。计数只需要结果明确，
+不需要账目完美；把账目质量与事实判定绑在一起，会让「记录工具」因为记不全而失去作用。
+
+**影响面**（已同步修改）：
+- `AvalonReducer`：移除 `if (verified)` 包裹；
+- 6 个测试按新规则重写断言：`AvalonStateMachineTest R11`、`AvalonMissionRulesTest R12`、
+  `AvalonEventValidationTest R13`、`AvalonReducerReplayTest R14`（3 个）；
+- `ARCHITECTURE.md`：§4 模型注释、§6.1 规则表、异常表第 10 行、§不变量第 8 条、设计原则表。

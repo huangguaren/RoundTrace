@@ -43,6 +43,9 @@ class FakeMatchRepository(
         putAll(initialRoles)
     }
     private val drafts = concurrentMap<String, String>()
+
+    /** 座位名的内存态（`updateParticipants` 写入，`buildBundle` 读出）。 */
+    private val participantsBySeat = LinkedHashMap<Int, Participant>()
     private var title: String = config.title
     private var status: MatchStatus = MatchStatus.DRAFT
 
@@ -143,6 +146,14 @@ class FakeMatchRepository(
         eventsState.value = emptyList()
     }
 
+    /** 对局进行中更新座位名/头像/坐标（内存语义，与 RoomMatchRepository.updateParticipants 对齐）。 */
+    override suspend fun updateParticipants(
+        matchId: MatchId,
+        participants: List<Participant>
+    ) {
+        participants.forEach { participantsBySeat[it.seat] = it }
+    }
+
     override suspend fun saveDraft(matchId: MatchId, screenKey: String, json: String) {
         drafts[screenKey] = json
         savedDrafts += json
@@ -164,7 +175,9 @@ class FakeMatchRepository(
         return MatchBundle(
             summary = buildSummary(events),
             config = config,
-            participants = (1..config.playerCount).map { Participant(seat = it) },
+            participants = (1..config.playerCount).map {
+                participantsBySeat[it] ?: Participant(seat = it)
+            },
             roleAssignments = roleAssignments.toMap(),
             events = active,
             revealedAt = revealedAt

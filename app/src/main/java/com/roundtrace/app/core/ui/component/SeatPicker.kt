@@ -1,11 +1,13 @@
 package com.roundtrace.app.core.ui.component
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -17,8 +19,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -56,6 +61,8 @@ fun SeatPicker(
     modifier: Modifier = Modifier,
     singleSelect: Boolean = false,
     badges: Map<Int, String> = emptyMap(),
+    seatLabels: Map<Int, String?> = emptyMap(),
+    seatAvatars: Map<Int, String?> = emptyMap(),
     enabled: Boolean = true
 ) {
     val rows = (1..playerCount).chunked(SEATS_PER_ROW)
@@ -74,13 +81,14 @@ fun SeatPicker(
                         seat = seat,
                         selected = selectedSeats.contains(seat),
                         badgeLabel = badges[seat],
+                        seatLabel = seatLabels[seat],
+                        avatarUri = seatAvatars[seat],
                         singleSelect = singleSelect,
                         enabled = enabled,
                         onClick = { onSeatClick(seat) },
                         modifier = Modifier.weight(1f)
                     )
                 }
-                // 最后一行不足 5 个时补空位，保持列宽一致
                 repeat(SEATS_PER_ROW - rowSeats.size) {
                     Box(modifier = Modifier.weight(1f))
                 }
@@ -94,6 +102,8 @@ private fun SeatCell(
     seat: Int,
     selected: Boolean,
     badgeLabel: String?,
+    seatLabel: String?,
+    avatarUri: String?,
     singleSelect: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -135,12 +145,53 @@ private fun SeatCell(
         }
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = seat.toString(),
-                style = MaterialTheme.typography.displaySmall,
-                color = content.copy(alpha = alpha)
-            )
-            if (selected && badgeLabel != null) {
+            if (avatarUri != null) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val bmp = remember(avatarUri) {
+                    runCatching {
+                        context.contentResolver.openInputStream(android.net.Uri.parse(avatarUri))?.use {
+                            android.graphics.BitmapFactory.decodeStream(it)
+                        }
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                    // 右下角数字角标
+                    Text(
+                        text = seat.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.onPrimary,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .background(scheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                } else {
+                    Text(
+                        text = seatLabel?.takeIf { it.isNotBlank() } ?: seat.toString(),
+                        style = if (seatLabel?.isNotBlank() == true)
+                            MaterialTheme.typography.titleMedium
+                        else
+                            MaterialTheme.typography.displaySmall,
+                        color = content.copy(alpha = alpha)
+                    )
+                }
+            } else {
+                Text(
+                    text = seatLabel?.takeIf { it.isNotBlank() } ?: seat.toString(),
+                    style = if (seatLabel?.isNotBlank() == true)
+                        MaterialTheme.typography.titleMedium
+                    else
+                        MaterialTheme.typography.displaySmall,
+                    color = content.copy(alpha = alpha)
+                )
+            }
+            if (badgeLabel != null) {
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = badgeLabel,

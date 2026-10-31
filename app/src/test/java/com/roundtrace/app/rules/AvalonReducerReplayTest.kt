@@ -78,12 +78,14 @@ class AvalonReducerReplayTest {
     }
 
     @Test
-    fun `R14 基准事实重放得到两胜一负`() {
+    fun `R14 基准事实重放得到两胜两负`() {
         val state = buildFourQuests(revised = false).replay()
 
         assertEquals("R14 基准：任务 1 与 3 成功，goodSuccessCount 应为 2", 2, state.goodSuccessCount)
-        assertEquals("R14 基准：只有任务 2 的失败可核实，evilFailureCount 应为 1", 1, state.evilFailureCount)
-        assertEquals("R14 基准：两胜一负尚未终局", MatchStatus.IN_PROGRESS, state.status)
+        // 规则（2026-10-31 裁决）：结果明确即计数——任务 2 与 4 都记录了失败牌数，
+        // 即使任务 4 队员不完整，失败仍是已经发生的事实。
+        assertEquals("R14 基准：任务 2 与 4 的失败都应计数", 2, state.evilFailureCount)
+        assertEquals("R14 基准：两胜两负尚未终局", MatchStatus.IN_PROGRESS, state.status)
         assertFalse(
             "R14 基准：任务 4 队员不完整，必须标记未核实",
             state.quests.first { it.questNo == 4 }.verified
@@ -92,18 +94,20 @@ class AvalonReducerReplayTest {
     }
 
     @Test
-    fun `R14 修订后按新事实重算计数且不保留旧结论`() {
+    fun `R14 修订后重放按新事实更新核实标记且计数口径不变`() {
         val baseState = buildFourQuests(revised = false).replay()
         val revisedState = buildFourQuests(revised = true).replay()
 
         assertEquals("R14 修订前 goodSuccessCount = 2", 2, baseState.goodSuccessCount)
         assertEquals("R14 修订后 goodSuccessCount 仍为 2（任务 2 的失败未变成成功）", 2, revisedState.goodSuccessCount)
 
-        assertEquals("R14 修订前 evilFailureCount = 1", 1, baseState.evilFailureCount)
-        assertEquals(
-            "R14 修订后 evilFailureCount 必须重算为 2（任务 4 的失败现在可核实）",
-            2,
-            revisedState.evilFailureCount
+        // 规则（2026-10-31 裁决）：计数只看结果是否明确，不依赖队伍账目是否补齐，
+        // 因此修订前后失败数一致；修订改变的是「能否复核」（verified）。
+        assertEquals("R14 修订前 evilFailureCount = 2（结果明确即计数）", 2, baseState.evilFailureCount)
+        assertEquals("R14 修订后 evilFailureCount 仍为 2", 2, revisedState.evilFailureCount)
+        assertFalse(
+            "R14 基准：任务 4 队员不完整 → 未核实",
+            baseState.quests.first { it.questNo == 4 }.verified
         )
         assertTrue(
             "R14 任务 4 补全队员后应可核实",
@@ -198,7 +202,8 @@ class AvalonReducerReplayTest {
             2,
             state.goodSuccessCount
         )
-        assertEquals("R14 retracted 事件不得计入失败", 1, state.evilFailureCount)
+        // 基准夹具本身有 2 次结果明确的失败；若 retracted 事件被计入会是 3，故断言 2。
+        assertEquals("R14 retracted 事件不得计入失败", 2, state.evilFailureCount)
     }
 
     @Test

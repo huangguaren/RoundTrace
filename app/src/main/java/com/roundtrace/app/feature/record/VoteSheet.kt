@@ -40,6 +40,7 @@ fun VoteSheet(
     decision: ProposalDecision,
     halfCount: Int,
     exceedsPlayers: Boolean,
+    seatAvatars: Map<Int, String?> = emptyMap(),
     onSeatVote: (Int, TeamVoteChoice) -> Unit,
     onSummaryChange: (Int?, Int?) -> Unit,
     onSaveVotes: () -> Unit,
@@ -71,6 +72,7 @@ fun VoteSheet(
                 decision = decision,
                 halfCount = halfCount,
                 exceedsPlayers = exceedsPlayers,
+                seatAvatars = seatAvatars,
                 onSeatVote = onSeatVote,
                 onSummaryChange = onSummaryChange
             )

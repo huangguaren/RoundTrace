@@ -270,7 +270,7 @@ class AvalonEventValidationTest {
     }
 
     @Test
-    fun `R13 任务队伍与已通过提案不一致时报码且不计数`() {
+    fun `R13 任务队伍与已通过提案不一致时报码但仍按既定结果计数`() {
         val result = MatchBuilder.eightPlayerMerlinMordred()
             .questCycle(
                 questNo = 1,
@@ -285,7 +285,9 @@ class AvalonEventValidationTest {
             "R13 应报 MISSION_TEAM_MISMATCH，实际=${result.issues.map { it.code }}",
             result.issues.any { it.code == IssueCode.MISSION_TEAM_MISMATCH }
         )
-        assertEquals("R13 队伍不一致的任务不得计数", 0, result.state.evilFailureCount)
+        // 规则（2026-10-31 裁决）：任务成败是公开事实，计数只看「结果是否明确」；
+        // 队伍账目不一致只标记未核实（待复核），不吞掉已经发生的失败。
+        assertEquals("R13 结果明确的失败仍应计数", 1, result.state.evilFailureCount)
         assertFalse("R13 应标记未核实", result.state.quests.first().verified)
     }
 

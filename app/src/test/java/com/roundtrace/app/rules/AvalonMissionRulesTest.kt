@@ -254,7 +254,7 @@ class AvalonMissionRulesTest {
     }
 
     @Test
-    fun `R12 观察到成功但失败牌数未知时保留观察值且不计数`() {
+    fun `R12 观察到成功但失败牌数未知时保留观察值并按观察结果计数`() {
         val builder = MatchBuilder.eightPlayerMerlinMordred()
             .questCycle(
                 questNo = 1,
@@ -273,6 +273,8 @@ class AvalonMissionRulesTest {
             quest1.outcome
         )
         assertFalse("R12 但必须标记未核实", quest1.verified)
-        assertEquals("R12 未核实不计数", 0, state.goodSuccessCount)
+        // 规则（2026-10-31 裁决）：任务成败是公开信息，观察结果明确即计数；
+        // 失败牌数未知只影响「可否复核」，不阻断胜负推进。
+        assertEquals("R12 观察结果明确即计数", 1, state.goodSuccessCount)
     }
 }

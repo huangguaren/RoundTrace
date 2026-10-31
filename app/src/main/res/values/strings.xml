@@ -2,7 +2,7 @@
 <!-- 全部中文 UI 文案集中在此（D6：领域层不拼 UI 文案） -->
 <resources>
 
-    <string name="app_name">鸭头</string>
+    <string name="app_name">我是好人</string>
 
     <!-- 底部导航 -->
     <string name="tab_home">首页</string>
@@ -173,7 +173,8 @@
     <string name="mission_section_title">任务牌（不是投票）</string>
     <string name="mission_fail_count_label">失败牌数</string>
     <string name="mission_fail_count_unknown">未知</string>
-    <string name="mission_rule_line">第 %1$d 任务需 ≥%2$d 张失败牌 → 本任务%3$s</string>
+    <string name="mission_rule_line_success">第 %1$d 任务失败牌 &lt; %2$d 张 → 本任务成功</string>
+    <string name="mission_rule_line_failed">第 %1$d 任务失败牌 ≥ %2$d 张 → 本任务失败</string>
     <string name="mission_rule_success">成功</string>
     <string name="mission_rule_failed">失败</string>
     <string name="mission_rule_unknown">结果未知</string>

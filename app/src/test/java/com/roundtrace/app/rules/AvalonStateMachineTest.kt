@@ -210,7 +210,7 @@ class AvalonStateMachineTest {
     }
 
     @Test
-    fun `R11 未核实任务不计入失败计数`() {
+    fun `R11 未核实任务仍按既定结果计数并标记待复核`() {
         val state = MatchBuilder.eightPlayerMerlinMordred()
             // 队伍只记录了 2 人（应有 3 人）→ 未核实，不计数
             .questCycle(
@@ -222,7 +222,9 @@ class AvalonStateMachineTest {
             )
             .replay()
 
-        assertEquals("R11 未核实任务不得计入失败数", 0, state.evilFailureCount)
+        // 规则（2026-10-31 裁决）：失败牌数已知 = 结果明确，必须计数；
+        // 队伍不完整只影响 verified / integrity，不再阻断胜负推进。
+        assertEquals("R11 结果明确的失败应计数", 1, state.evilFailureCount)
         assertNull(
             "R11 未核实任务不应给出可计数结论",
             state.quests.first().outcome?.takeIf { state.quests.first().verified }

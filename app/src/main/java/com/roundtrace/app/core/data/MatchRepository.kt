@@ -62,6 +62,9 @@ interface MatchRepository {
 
     suspend fun renameMatch(matchId: MatchId, title: String)
 
+    /** 对局进行中更新座位名/头像/坐标（不改人数）。 */
+    suspend fun updateParticipants(matchId: MatchId, participants: List<com.roundtrace.app.core.model.Participant>)
+
     suspend fun deleteMatch(matchId: MatchId)
 
     suspend fun saveDraft(matchId: MatchId, screenKey: String, json: String)

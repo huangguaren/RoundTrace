@@ -141,12 +141,21 @@ class CreateMatchViewModel(
         )
     }
 
-    /** 设置某个座位的拖拽位置（归一化 0..1）。 */
+    /** 设置某个座位的拖拽位置（归一化 0..1）。目标格子被占时自动互换。 */
     fun onSeatPositionChange(seat: Int, x: Float, y: Float) {
         val current = _state.value
-        _state.value = current.copy(
-            seatPositions = current.seatPositions + (seat to (x to y))
-        )
+        val oldPos = current.seatPositions[seat] ?: (0f to 0f)
+        // 找目标格子上已有的座位
+        val occupiedBy = current.seatPositions.entries.firstOrNull { (k, v) ->
+            k != seat && kotlin.math.abs(v.first - x) < 0.01f && kotlin.math.abs(v.second - y) < 0.01f
+        }?.key
+        val newMap = if (occupiedBy != null) {
+            // 互换：被占座位挪到当前座位原来的位置
+            current.seatPositions + (seat to (x to y)) + (occupiedBy to oldPos)
+        } else {
+            current.seatPositions + (seat to (x to y))
+        }
+        _state.value = current.copy(seatPositions = newMap)
     }
 
     /** 设置某个座位的头像 URI。 */

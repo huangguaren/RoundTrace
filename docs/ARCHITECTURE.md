@@ -514,7 +514,7 @@ data class QuestState(
     val teamSeats: List<SeatId>?,       // 通过队伍（来自 APPROVED 提案；可被任务事件覆盖）
     val failCount: Int?,
     val outcome: MissionOutcome?,       // 结算结果；unknown 表示不可判定
-    val verified: Boolean,              // 是否可计入 good/evil 计数
+    val verified: Boolean,              // 是否可复核（2026-10-31 起不再决定是否计数）
     val resolvedAtOrder: Int?
 )
 
@@ -986,7 +986,7 @@ suspend fun find(matchId: String, revision: Int, key: String): AnalysisReportEnt
 | `TEAM_PROPOSED(q, p, leader, team)` | `PROPOSAL_OPEN` 或 `VOTING`（同 p 修订） | `q==Q`；`p==P+1`（新提案）或 `p==P`（修订当前提案）；`team` 无重复且 `|team|==teamSize(n,q)`；座位 `1..n` | 建立/替换 `pendingProposal`（P=p 或 P+1）；`phase=VOTING`；`currentLeaderSeat=leader` | 人数不符/重复/越界 → 保存事件，`decisionVerified=false`，`phase` **不变**，`integrity=NEEDS_REVIEW`，issue=`TEAM_SIZE_MISMATCH`/`DUPLICATE_SEAT`/`SEAT_OUT_OF_RANGE`（BLOCKING） |
 | `TEAM_VOTE_RECORDED(q, p, ...)` | `VOTING` | `q==Q`；`p==P`；`approve+reject ≤ n`；若同时有逐人票，逐人票统计必须与汇总一致 | 回填票数到 `pendingProposal`；`phase` 不变 | 超人数 → `VOTE_COUNT_EXCEEDS_PLAYERS`；逐人/汇总矛盾 → `VOTE_SUM_MISMATCH`，两者均 `decisionVerified=false` |
 | `TEAM_PROPOSAL_RESOLVED(q, p, decision)` | `VOTING` | `q==Q`；`p==P`；决策与已知票数自洽 | `decision=APPROVED` → `phase=MISSION_PENDING`，`QuestState.teamSeats=team`；`decision=REJECTED` → `R+=1`，`P+=1`（下一提案号），`currentLeaderSeat=nextLeader`，`phase=PROPOSAL_OPEN`；若 `R>=5` → `status=FINISHED_EVIL`，`outcome(FIVE_CONSECUTIVE_REJECTS)`，`phase=ENDED` | 票数与 decision 冲突 → `DECISION_VOTE_CONFLICT`（WARNING），保留用户 decision 但 `decisionVerified=false`，**仍推进**（用户现场看到的就是这个结果，规则不覆盖事实） |
-| `MISSION_RESOLVED(q, team, fail, outcome)` | `MISSION_PENDING` | `q==Q`；`failCount ∈ 0..|team|`；如果 `observedOutcome` 与 `failCount` 推导不一致 → 冲突 | 写入 `QuestState.failCount/outcome`；`outcome` 由 `isMissionFailed` 推导（`failCount != null` 时）；`verified = team完整 && failCount!=null && 与 observedOutcome 一致`；`verified` 时累加 `goodSuccessCount` / `evilFailureCount`；`phase=QUEST_RESOLVED` | `failCount==null` 或 team 不完整 → `outcome=UNKNOWN`，`verified=false`，**不计数**，issue=`DATA_INCOMPLETE`（WARNING）；`failCount > |team|` → `FAIL_COUNT_EXCEEDS_TEAM`（BLOCKING） |
+| `MISSION_RESOLVED(q, team, fail, outcome)` | `MISSION_PENDING` | `q==Q`；`failCount ∈ 0..|team|`；如果 `observedOutcome` 与 `failCount` 推导不一致 → 冲突 | 写入 `QuestState.failCount/outcome`；`outcome` 由 `isMissionFailed` 推导（`failCount != null` 时）；`verified = team完整 && failCount!=null && 与 observedOutcome 一致`；**`outcome != UNKNOWN` 时累加 `goodSuccessCount` / `evilFailureCount`（与 verified 解耦，2026-10-31 裁决，见 decisions D-RULE-01）**；`phase=QUEST_RESOLVED` | `failCount==null` **且**无 `observedOutcome` → `outcome=UNKNOWN`，`verified=false`，**不计数**，issue=`DATA_INCOMPLETE`（WARNING）；team 不完整但结果明确 → 计数，`verified=false` 待复核；`failCount > |team|` → `FAIL_COUNT_EXCEEDS_TEAM`（BLOCKING） |
 | `PLAYER_CLAIMED` | 任意（`IN_PROGRESS`/`AWAITING_ASSASSINATION`/`FINISHED_*` 补录） | `speaker ∈ 1..n` | 仅追加事实，**不改状态、不改 phase** | 座位越界 → `SEAT_OUT_OF_RANGE`（WARNING），事件保留 |
 | `PRIVATE_NOTE_ADDED` | 任意 | `observer ∈ 1..n` | 仅追加，不改状态 | 同上 |
 | `ASSASSINATION_RECORDED` | `AWAITING_ASSASSINATION`（`status`） | `target`/`assassin ∈ 1..n`；`hitMerlin` 可由 `roleTruth` 推导 | `hitMerlin==true` → `status=FINISHED_EVIL`、`outcome(ASSASSIN_HIT_MERLIN)`；`false` → `status=FINISHED_GOOD`、`outcome(ASSASSIN_MISSED)`；`phase=ENDED` | `hitMerlin==null`（目标角色 UNKNOWN）→ 状态**保持** `AWAITING_ASSASSINATION`，issue=`UNKNOWN_ROLE_FOR_OUTCOME`（WARNING）；非该阶段 → `ASSASSINATION_NOT_ALLOWED`（BLOCKING），事件保留但不生效 |
@@ -1493,7 +1493,7 @@ maxEvil           = min(evilCount, teamSize - |teamSeats ∩ knownGood|, teamSiz
 | 7 | 上帝的开放条件：PRD 说「结局揭晓后」，DESIGN_SPEC §7 说「`status != FINISHED/AWAITING_ASSASSINATION` 时禁用」（即在 AWAITING_ASSASSINATION 时**允许**） | 统一为**数据条件**而非状态条件：`canOpenGodView = (match.revealedAt != null) && status ∈ {AWAITING_ASSASSINATION, FINISHED_GOOD, FINISHED_EVIL}`。既满足 PRD「揭晓后」，也不违背 DESIGN_SPEC（它只约束入口不早于刺杀阶段）。这是唯一同时满足两份文档的判据。 |
 | 8 | 部分票未知时能否判定提案通过 | 能。`approveCount > n/2` 数学确定 → `APPROVED`；只有「未知票可能翻转」时才 `UNKNOWN`（§6.3）。若一律要求全票录入，会违反 PRD 5.2「可跳过不记得的字段」。 |
 | 9 | `TeamProposalResolved.decision` 与票数矛盾时听谁的 | 保留用户 decision（现场观察是事实），标 `decisionVerified=false` + `DECISION_VOTE_CONFLICT`。理由：PRD 优先级「录入和数据可靠性 > 规则正确性」。 |
-| 10 | `MissionResolved` 队伍与 APPROVED 提案队伍不一致 | 以 `MissionResolved.teamSeats` 为准（更接近实际发生的出牌），记 `MISSION_TEAM_MISMATCH`，`verified=false`，不计数。 |
+| 10 | `MissionResolved` 队伍与 APPROVED 提案队伍不一致 | 以 `MissionResolved.teamSeats` 为准（更接近实际发生的出牌），记 `MISSION_TEAM_MISMATCH`，`verified=false`；但结果明确（失败牌数已知或观察到结果）时**仍计数**（2026-10-31 裁决）。 |
 | 11 | 未核实（`verified=false`）的任务是否计入 3 成功/3 失败 | **不计入**。PRD FR-03「不完整录入…不得宣称合法任务已执行」+ TDD §3.3。UI 必须显示「本任务未核实，不参与胜负判定」。 |
 | 12 | 修订事件的实现方式（`supersedesId` vs `retracted`） | 双写：新事件 `supersedesId=旧id`；同一事务内把旧事件 `retracted=1`。**读路径只按 `retracted` 过滤**，`supersedesId` 仅作审计链。理由：单条件过滤无歧义、可被一条 SQL 覆盖、易测。 |
 | 13 | 队长顺延规则未定义（PRD 只说「按规则顺延」） | `nextLeader = (currentLeaderSeat % playerCount) + 1`（座位号 1..N 环形）。用户手工指定不同座位时记 `LEADER_NOT_EXPECTED`（INFO/WARNING），**不阻断**（补录场景 PRD 明确允许修订）。 |
@@ -1549,7 +1549,7 @@ maxEvil           = min(evilCount, teamSize - |teamSeats ∩ knownGood|, teamSiz
 5. `WinReason.NO_ASSASSIN_PRESENT` 的引入（无刺客变体的出口）。
 6. 上帝视角判据改为 `revealedAt != null`（而非单纯 status）。
 7. 五连否决的累计与重置边界。
-8. 未核实任务不计入胜负计数。
+8. 任务结果明确即计入胜负（2026-10-31 裁决，原「未核实不计数」已废止）；`verified` 只表示账目可复核性，影响 `integrity` 与提示，不影响计数。
 9. 修订事件采用「新事件 + 旧事件 retracted」双写，读路径只按 `retracted` 过滤。
 10. 队长顺延公式与「不阻断只提示」策略。
 11. 私有事件在 Repository 不过滤、由导出/视角层过滤的理由。
@@ -1613,7 +1613,7 @@ ReplayViewModel.onSelectPosition(order) / onSelectPerspective(mode)
 |---|---|
 | 单一事实源 | 事件表是唯一历史；状态、时间线、复盘全部由 replay 派生；`analysis_reports` 只是可清缓存 |
 | 规则与 UI 解耦 | 规则/视角/证据全在 `core/*` 纯 Kotlin；UI 只渲染 `UiState` |
-| 未知即未知 | `null` 与 `0` 语义分离；`UNKNOWN` 枚举值显式存在；未核实不计数 |
+| 未知即未知 | `null` 与 `0` 语义分离；`UNKNOWN` 枚举值显式存在；仅当结果不可判定时才不计数（未核实仍计数，只标记待复核） |
 | 可测性 | 领域层无 Android 依赖，R01–R14/K01–K10 全为 JVM 单测 |
 | 可扩展（狼人杀） | `GameRules`/`KnowledgeProvider`/`ReplayAnalyzer` 为接口；核心模型无 `quest1..quest5` 固定列、无 `isWerewolf` |
 | 极简依赖 | 无 Hilt、无 Retrofit、无广告/统计 SDK、无 INTERNET 权限 |

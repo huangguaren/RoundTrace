@@ -139,6 +139,12 @@ class RecordViewModel(
 
             RecordAction.Undo -> undo()
 
+            is RecordAction.DeleteEvent -> deleteEvent(action.eventId)
+
+            is RecordAction.UpdateParticipants -> updateParticipants(action.participants)
+
+            is RecordAction.RollbackToQuest -> rollbackToQuest(action.questNo)
+
             RecordAction.ClearUndoFeedback -> undoFeedbackFlow.value = null
         }
     }
@@ -190,13 +196,26 @@ class RecordViewModel(
         val leader = state.draft.leaderSeat ?: return
         val team = state.draft.teamSeats.sorted()
         if (team.isEmpty()) return
-        val event = eventFactory.teamProposed(
-            questNo = quest.questNo,
-            proposalNo = quest.nextProposalNo,
-            leaderSeat = leader,
-            teamSeats = team
-        )
-        append(event)
+        val proposalNo = quest.nextProposalNo
+        viewModelScope.launch {
+            // 编辑模式：撤回该提案的旧 TeamProposed
+            val bundle = repository.getBundle(matchId)
+            if (bundle != null) {
+                bundle.events.filter {
+                    it is com.roundtrace.app.core.model.TeamProposed &&
+                        it.questNo == quest.questNo &&
+                        it.proposalNo == proposalNo &&
+                        !it.retracted
+                }.forEach { old -> runCatching { repository.retractEvent(matchId, old.eventId) } }
+            }
+            val event = eventFactory.teamProposed(
+                questNo = quest.questNo,
+                proposalNo = proposalNo,
+                leaderSeat = leader,
+                teamSeats = team
+            )
+            append(event)
+        }
     }
 
     private fun saveVotes() {
@@ -204,16 +223,29 @@ class RecordViewModel(
         val quest = state.quest ?: return
         val draft = state.draft
         if (!draft.hasVoteData) return
-        val event = eventFactory.teamVoteRecorded(
-            questNo = quest.questNo,
-            proposalNo = quest.nextProposalNo - 1,
-            playerCountAtVote = state.playerCount,
-            votesBySeat = draft.votesBySeat.ifEmpty { null },
-            approveCount = draft.approveCount,
-            rejectCount = draft.rejectCount,
-            unknownVoteCount = draft.unknownVoteCount(state.playerCount)
-        )
-        append(event)
+        val proposalNo = quest.nextProposalNo - 1
+        viewModelScope.launch {
+            // 编辑模式：撤回该提案的旧投票记录
+            val bundle = repository.getBundle(matchId)
+            if (bundle != null) {
+                bundle.events.filter {
+                    it is com.roundtrace.app.core.model.TeamVoteRecorded &&
+                        it.questNo == quest.questNo &&
+                        it.proposalNo == proposalNo &&
+                        !it.retracted
+                }.forEach { old -> runCatching { repository.retractEvent(matchId, old.eventId) } }
+            }
+            val event = eventFactory.teamVoteRecorded(
+                questNo = quest.questNo,
+                proposalNo = proposalNo,
+                playerCountAtVote = state.playerCount,
+                votesBySeat = draft.votesBySeat.ifEmpty { null },
+                approveCount = draft.approveCount,
+                rejectCount = draft.rejectCount,
+                unknownVoteCount = draft.unknownVoteCount(state.playerCount)
+            )
+            append(event)
+        }
     }
 
     private fun confirmVoteDecision(decision: ProposalDecision) {
@@ -239,16 +271,27 @@ class RecordViewModel(
         val state = uiState.value
         val quest = state.quest ?: return
         val draft = state.draft
-        // 队员允许不完整（现场常常记不全）：空集按「未记录」处理，规则层会报 DATA_INCOMPLETE
         val team = draft.teamSeats.takeIf { it.isNotEmpty() }?.sorted()
-        val event = eventFactory.missionResolved(
-            questNo = quest.questNo,
-            teamSizeExpected = quest.expectedTeamSize,
-            teamSeats = team,
-            failCount = draft.failCount,
-            observedOutcome = draft.observedOutcome
-        )
-        append(event)
+        viewModelScope.launch {
+            // 编辑模式：如果当前任务已有 MISSION_RESOLVED 事件，先撤回
+            val bundle = repository.getBundle(matchId)
+            if (bundle != null) {
+                val existing = bundle.events.filter {
+                    it is com.roundtrace.app.core.model.MissionResolved && it.questNo == quest.questNo && !it.retracted
+                }
+                existing.forEach { old ->
+                    runCatching { repository.retractEvent(matchId, old.eventId) }
+                }
+            }
+            val event = eventFactory.missionResolved(
+                questNo = quest.questNo,
+                teamSizeExpected = quest.expectedTeamSize,
+                teamSeats = team,
+                failCount = draft.failCount,
+                observedOutcome = draft.observedOutcome
+            )
+            append(event)
+        }
     }
 
     /**
@@ -273,6 +316,45 @@ class RecordViewModel(
         }
     }
 
+    /** 删除指定历史事件（时间线点删除按钮）。 */
+    private fun deleteEvent(eventId: com.roundtrace.app.core.model.EventId) {
+        viewModelScope.launch {
+            saveStatusFlow.value = SaveStatus.SAVING
+            val result = runCatching { repository.retractEvent(matchId, eventId) }
+            saveStatusFlow.value = if (result.isSuccess) SaveStatus.SAVED else SaveStatus.FAILED
+        }
+    }
+
+    /** 更新座位名/头像。 */
+    private fun updateParticipants(participants: List<com.roundtrace.app.core.model.Participant>) {
+        viewModelScope.launch {
+            runCatching { repository.updateParticipants(matchId, participants) }
+        }
+    }
+
+    /** 回滚到指定任务：删除该任务结算之后的所有事件。 */
+    private fun rollbackToQuest(questNo: Int) {
+        viewModelScope.launch {
+            val bundle = repository.getBundle(matchId) ?: return@launch
+            // 找任务N的最后一个事件 order（该任务的 MISSION_RESOLVED 或最后一个相关事件）
+            val questEvents = bundle.events.filter { event ->
+                when (event) {
+                    is com.roundtrace.app.core.model.QuestStarted -> event.questNo == questNo
+                    is com.roundtrace.app.core.model.TeamProposed -> event.questNo == questNo
+                    is com.roundtrace.app.core.model.TeamVoteRecorded -> event.questNo == questNo
+                    is com.roundtrace.app.core.model.TeamProposalResolved -> event.questNo == questNo
+                    is com.roundtrace.app.core.model.MissionResolved -> event.questNo == questNo
+                    else -> false
+                }
+            }
+            val cutoffOrder = questEvents.maxOfOrNull { it.occurredOrder } ?: 0
+            // 删除所有 order > cutoffOrder 的事件
+            bundle.events.filter { it.occurredOrder > cutoffOrder }.forEach { e ->
+                runCatching { repository.retractEvent(matchId, e.eventId) }
+            }
+        }
+    }
+
     private fun append(event: MatchEvent) {
         viewModelScope.launch {
             saveStatusFlow.value = SaveStatus.SAVING
@@ -283,8 +365,10 @@ class RecordViewModel(
                 else -> SaveStatus.SAVED
             }
             if (result.isSuccess && result.getOrNull()?.isSuccess == true) {
-                // 事件已落库 → 清空本轮表单内容，但保留队长（下一轮提案通常同一队长续提）
-                draftFlow.value = ProposalDraft(leaderSeat = draftFlow.value.leaderSeat)
+                // 事件已落库 → 清空本轮表单内容
+                // 如果是任务开始事件，不保留队长，新任务重新选队长
+                val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
+                draftFlow.value = ProposalDraft(leaderSeat = if (keepLeader) draftFlow.value.leaderSeat else null)
                 runCatching { repository.clearDraft(matchId, DRAFT_KEY) }
             }
         }
@@ -331,7 +415,7 @@ class RecordViewModel(
             questNo = activeQuestNo,
             expectedTeamSize = expectedTeamSize,
             failThreshold = failThreshold,
-            leaderSeat = draft.leaderSeat ?: currentQuest?.leaderSeat,
+            leaderSeat = draft.leaderSeat,
             nextProposalNo = nextProposalNo,
             phase = gameState.phase,
             status = gameState.status,
@@ -400,6 +484,9 @@ class RecordViewModel(
             timeline = TimelineBuilder.build(bundle.events),
             playerCount = playerCount,
             mySeat = bundle.config.mySeat,
+            seatLabels = bundle.participants.associate { it.seat to it.displayName },
+            seatAvatars = bundle.participants.associate { it.seat to it.avatarUri },
+            participants = bundle.participants,
             currentProposal = proposalModel,
             halfCount = playerCount / 2,
             voteDecision = voteDecision,

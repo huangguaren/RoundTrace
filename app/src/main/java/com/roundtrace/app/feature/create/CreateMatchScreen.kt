@@ -606,8 +606,12 @@ private fun SeatLayoutStep(
                         .size(cellSize)
                         .clip(MaterialTheme.shapes.medium)
                         .background(MaterialTheme.colorScheme.primaryContainer)
-                        .pointerInput(seat, canvasW, canvasH, cellW, cellH) {
+                        .pointerInput(seat, canvasW, canvasH, cellW, cellH, cellSize) {
+                            val density = this
                             detectDragGestures(
+                                onDragStart = {
+                                    // 手指按下时在方块内的偏移（px）
+                                },
                                 onDragEnd = {
                                     val (sx, sy) = snapToGrid(offsetX, offsetY)
                                     offsetX = sx
@@ -618,8 +622,11 @@ private fun SeatLayoutStep(
                                 }
                             ) { change, drag ->
                                 change.consume()
-                                offsetX = (offsetX + drag.x).coerceIn(padding, canvasW.value - padding - cellW)
-                                offsetY = (offsetY + drag.y).coerceIn(padding, canvasH.value - padding - cellH)
+                                // drag.x/drag.y 是 px，转成 dp 值再加到 offsetX/offsetY（dp）
+                                val dx = with(density) { drag.x.toDp().value }
+                                val dy = with(density) { drag.y.toDp().value }
+                                offsetX = (offsetX + dx).coerceIn(padding, canvasW.value - padding - cellW)
+                                offsetY = (offsetY + dy).coerceIn(padding, canvasH.value - padding - cellH)
                             }
                         }
                         .clickable {
@@ -637,12 +644,24 @@ private fun SeatLayoutStep(
                             }.getOrNull()
                         }
                         if (bmp != null) {
-                            androidx.compose.foundation.Image(
-                                bitmap = bmp.asImageBitmap(),
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                            )
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = bmp.asImageBitmap(),
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                )
+                                // 右下角数字角标
+                                Text(
+                                    text = seat.toString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
+                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
                         } else {
                             SeatLabel(seat, seatNames[seat])
                         }
