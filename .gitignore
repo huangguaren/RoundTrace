@@ -23,3 +23,6 @@ captures/
 
 # 注意：app/schemas/ 必须提交到仓库（Room 迁移测试依赖），不要在此忽略。
 # 注意：gradle/wrapper/gradle-wrapper.jar 必须提交。
+
+# Kotlin 会话目录（本地构建产物）
+.kotlin/

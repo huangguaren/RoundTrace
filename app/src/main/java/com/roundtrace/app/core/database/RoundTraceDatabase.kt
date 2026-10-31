@@ -1,6 +1,8 @@
 package com.roundtrace.app.core.database
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -19,6 +21,82 @@ import com.roundtrace.app.core.database.entity.MatchEntity
 import com.roundtrace.app.core.database.entity.MatchEventEntity
 import com.roundtrace.app.core.database.entity.ParticipantEntity
 import com.roundtrace.app.core.database.entity.RoleAssignmentEntity
+import java.io.File
+
+/** 日志 tag（数据库相关的启动期自检与备份都走它）。 */
+private const val DB_TAG = "RoundTraceDb"
+
+/**
+ * 迁移前自动备份（migration-plan §14-① 第 5 条）。
+ *
+ * ## 为什么必须在 `Room.databaseBuilder(...)` **之前**调用
+ *
+ * `RoomDatabase.Callback.onOpen` 是在**迁移跑完之后**才触发的，
+ * 那时库已经是 v4 了，再备份等于备份了一个已经被改过的库——无法作为回退点。
+ * 因此备份只能放在「打开连接」这一动作之前，靠直接读文件判断版本。
+ *
+ * ## 三个必须的处理
+ *
+ * 1. **WAL**：本库启用了 `WRITE_AHEAD_LOGGING`，最新事务可能还在 `-wal` 文件里。
+ *    不先 `PRAGMA wal_checkpoint(TRUNCATE)` 就复制，会得到「缺最近事务」的备份——
+ *    这种备份比没有备份更危险，因为它看起来是好的。
+ * 2. **只备份 v1..v3**：v4 已经是目标版本，不需要备份（也就不会每次启动都复制一遍）。
+ * 3. **绝不抛出**：备份失败只 `Log.w`。备份是为了降低风险，不能自己变成新的启动失败源。
+ */
+internal fun backupBeforeMigration(context: Context, name: String?) {
+    if (name == null) return
+    runCatching {
+        val dbFile = context.applicationContext.getDatabasePath(name)
+        if (!dbFile.exists()) return
+
+        val version = readUserVersionWithCheckpoint(dbFile)
+        if (version !in OLDEST_BACKED_UP_VERSION..NEWEST_BACKED_UP_VERSION) return
+
+        val target = File(dbFile.parentFile, "$name.bak.v$version")
+        dbFile.copyTo(target, overwrite = true)
+        deleteOlderBackups(dbFile.parentFile, name, keepVersion = version)
+
+        Log.i(DB_TAG, "迁移前备份完成：v$version → ${target.name}")
+    }.onFailure { throwable ->
+        Log.w(DB_TAG, "迁移前备份失败（已忽略，不阻断启动）", throwable)
+    }
+}
+
+/** 需要备份的版本区间：v1..v3（v4 是当前版本）。 */
+private const val OLDEST_BACKED_UP_VERSION = 1
+private const val NEWEST_BACKED_UP_VERSION = 3
+
+/**
+ * 先 checkpoint 再读 `user_version`。
+ *
+ * 打开方式用 `OPEN_READWRITE`：`wal_checkpoint` 需要写权限（要把 `-wal` 合并回主文件）。
+ */
+private fun readUserVersionWithCheckpoint(dbFile: File): Int {
+    val sqlite = SQLiteDatabase.openDatabase(
+        dbFile.path,
+        null,
+        SQLiteDatabase.OPEN_READWRITE
+    )
+    return sqlite.use { db ->
+        // 忽略 checkpoint 的返回值：即使因其它连接占用而未能完全合并，
+        // 后面复制到的也至少是「某个一致状态」，不会比不 checkpoint 更差。
+        runCatching {
+            db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+        }
+        db.rawQuery("PRAGMA user_version", null).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+}
+
+/** 只保留最新一份备份，避免历史备份把用户存储撑爆。 */
+private fun deleteOlderBackups(dir: File?, name: String, keepVersion: Int) {
+    if (dir == null) return
+    val prefix = "$name.bak.v"
+    dir.listFiles()
+        ?.filter { it.name.startsWith(prefix) && it.name != "$prefix$keepVersion" }
+        ?.forEach { stale -> runCatching { stale.delete() } }
+}
 
 /**
  * 应用数据库（ARCHITECTURE §4.8 / TASKS.md T30）。
@@ -139,10 +217,15 @@ abstract class RoundTraceDatabase : RoomDatabase() {
          * 构造数据库实例。
          *
          * @param context 任意 Context（内部会取 applicationContext）
-         * @param name 数据库名；测试可传 `null` 走内存库
+         * @param name 数据库名；`null` 表示**不启用迁移前备份**（实际库名仍回落到
+         *        [DATABASE_NAME]）。内存库请用 [buildInMemory]。
          */
-        fun build(context: Context, name: String? = DATABASE_NAME): RoundTraceDatabase =
-            Room.databaseBuilder(
+        fun build(context: Context, name: String? = DATABASE_NAME): RoundTraceDatabase {
+            // ① 迁移前备份：**必须在 databaseBuilder 之前**
+            //    （Callback.onOpen 在迁移之后才触发，那时备份已经晚了）
+            backupBeforeMigration(context, name)
+
+            return Room.databaseBuilder(
                 context.applicationContext,
                 RoundTraceDatabase::class.java,
                 name ?: DATABASE_NAME
@@ -151,6 +234,7 @@ abstract class RoundTraceDatabase : RoomDatabase() {
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                 .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
+        }
 
         /** 内存库（仪器测试用）。 */
         fun buildInMemory(context: Context): RoundTraceDatabase =
