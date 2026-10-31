@@ -163,6 +163,16 @@ class AvalonKnowledgeProvider(
             observerSeat = null
         )
 
+        // P2-1：观察者**本人**的 CLAIMED_* 标签必须基于「他自己看得见的事件」，
+        // 而不是公开事件。RT-005 修泄漏时把 claimLabels 的事件源一刀切成 publicOnly，
+        // 结果「我私下记了一句自己跳梅林」在本人视角里也消失了（只剩 SELF 标签）。
+        // 注意：PUBLIC 模式下它与 publicOnlyEvents 等价，不会放宽任何东西。
+        val observerVisibleEvents = VisibleEventPolicy.forPerspective(
+            events = eventsAtTime,
+            mode = mode,
+            observerSeat = observer
+        )
+
         val publicFacts = buildPublicFacts(publicOnlyEvents)
         val seatKnowledge = buildSeatKnowledge(
             seats = seats,
@@ -170,9 +180,10 @@ class AvalonKnowledgeProvider(
             observerSeat = observer,
             observerRole = observerRole,
             privateFacts = privateFacts,
-            // claimLabels 只读声称事件，必须限定为「公开可见」：
-            // 私有声称记的是「我说过这句话」，它不是公开事实，不能给别人贴 CLAIMED_* 标签
+            // 其余座位只认公开声称
             eventsAtTime = publicOnlyEvents,
+            // 观察者本人那一格额外认自己可见的私有声称
+            observerVisibleEvents = observerVisibleEvents,
             roleTruth = roleTruth
         )
 
@@ -435,6 +446,12 @@ class AvalonKnowledgeProvider(
     // 座位认知
     // ————————————————————————————————————————————————————————
 
+    /**
+     * @param eventsAtTime **公开可见**事件（用于给所有座位贴公开的 CLAIMED_* 标签）
+     * @param observerVisibleEvents **当前视角可见**事件（只用于观察者本人那一格）。
+     *        与 [eventsAtTime] 的区别仅在于「本人可见的私有声称」——
+     *        别人的私有声称永远进不了任何人的视角。
+     */
     private fun buildSeatKnowledge(
         seats: List<SeatId>,
         mode: Perspective,
@@ -442,15 +459,22 @@ class AvalonKnowledgeProvider(
         observerRole: RoleId?,
         privateFacts: List<PrivateFact>,
         eventsAtTime: List<MatchEvent>,
+        observerVisibleEvents: List<MatchEvent>,
         roleTruth: Map<SeatId, RoleId>
     ): Map<SeatId, SeatKnowledge> {
-        val claimLabels = claimLabels(eventsAtTime)
+        val publicClaimLabels = claimLabels(eventsAtTime)
+        // 只比 public 多出「观察者自己的私有声称」；其他人的私有声称仍不可见
+        val observerClaimLabels = claimLabels(observerVisibleEvents)
 
         return seats.associateWith { seat ->
             var knownAlignment: Alignment? = null
             var visibleRole: RoleId? = null
             val candidateRoles = mutableListOf<RoleId>()
-            val labels = claimLabels[seat]?.toMutableSet() ?: mutableSetOf()
+            val labels = if (seat == observerSeat) {
+                observerClaimLabels[seat]?.toMutableSet() ?: mutableSetOf()
+            } else {
+                publicClaimLabels[seat]?.toMutableSet() ?: mutableSetOf()
+            }
             val evidence = mutableListOf<EventId>()
 
             when (mode) {
