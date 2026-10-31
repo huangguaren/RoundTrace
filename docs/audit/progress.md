@@ -146,3 +146,149 @@ B 局的事件一条也没撤销，**留下两份互相矛盾的「同一事实�
    `WHERE id = :id AND matchId = :matchId`，主键是 `id`，查询仍走主键索引，性能无影响；
    但语义上「事件 id 全局唯一」这件事现在同时靠主键与应用层保证，未在 schema 层显式声明。
 5. **lint 仍有 54 warning**（与基线同类，主要是 `UnusedAttribute` 等）。本轮未新增。
+
+---
+
+# Phase 2 · P2-1 修复 + RT-003 Step 1
+
+基线：`8dd50cd`（245 单测 / 0 失败）。
+
+## 提交一览
+
+| # | 提交 | 内容 |
+|---|---|---|
+| 1 | `5efc864` | P2-1：观察者保留自己的 CLAIMED_* 标签 |
+| 2 | `21a153e` | build(test)：schemas 挂 test/androidTest assets |
+| 3 | `759e133` | RT-003 Step 1：加列 + v4 迁移 + 双写 |
+
+均未 push。`21a153e` 是对 `af6866b` 的 amend（原提交注释里 `schemas/*.json` 的 `/*` 触发 Kotlin 嵌套块注释，脚本编译失败；amend 后该 commit 自身可构建）。
+
+## 验证命令与结果
+
+```bash
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
+BUILD SUCCESSFUL in 2m 15s
+```
+
+| 项 | 基线 | 现在 |
+|---|---|---|
+| JVM 单测 | 245 | **260**（+15） |
+| 失败 | 0 | **0** |
+| lint | 0 error | **0 error**（BUILD SUCCESSFUL 即 abortOnError 通过） |
+| APK | — | `app-debug.apk` 20,494,329 bytes |
+| `assembleDebugAndroidTest` | — | BUILD SUCCESSFUL（仪器测试源码可编译） |
+
+### 用例数变化明细
+
+| 来源 | 数量 |
+|---|---|
+| P2-1 `PerspectiveLeakExitsTest` | +4（245→249） |
+| T2 `MigrationBackfillManualTest` | +4 |
+| T3 `DatabaseBackupTest` | +1 |
+| T4 `EventSlotAssignmentTest` | +6 |
+| **合计** | **+15 → 260** |
+
+T1 `MigrationV3ToV4Test` 的 7 例不计入 JVM 数（已下沉 androidTest，见下）。
+
+## 新增测试名
+
+**P2-1** `PerspectiveLeakExitsTest`：
+`observerKeepsOwnPrivateClaimLabel`、`observersPrivateClaimDoesNotLeakToOtherSeats`、
+`publicFactsStillExcludeThePrivateClaim`、`godViewSeesEveryonesClaims`
+
+**T2** `MigrationBackfillManualTest`：
+`migratingLegacyFileBackfillsPlainEvents`、`migratingLegacyFileBackfillsRevisionChain`、
+`migratingOrphanChainDoesNotThrow`、`migratingEmptyLegacyFileWorks`
+
+**T3** `DatabaseBackupTest`：`v3BackupFileIsReadableAndMatchesSource`
+
+**T4** `EventSlotAssignmentTest`：
+`t4a_appendingTwentyKeepsBothSequencesAligned`、`t4b_revisingPositionFiveWritesNewSeqAndRetractsOld`、
+`t4c_revisingAgainIncrementsSeqAndKeepsPosition`、`t4d_appendAfterRevisionUsesMaxPositionPlusOne`、
+`t4e_retractedPositionIsNeverReused`、`t4f_slotsAreIsolatedPerMatch`
+
+**T1（androidTest，NOT RUN）**：`t1a`…`t1g` 共 7 例，断言与 migration-plan §15.3 逐条对应。
+
+## T1 状态：**NOT RUN**（不是通过，也不是失败）
+
+- 在 `src/test` 下用 Robolectric 跑 `MigrationTestHelper` 时，7 例全部抛
+  `java.io.FileNotFoundException: Cannot find the schema file in the assets folder`。
+- 根因：`isIncludeAndroidResources = true` 只合并 **main** 变体的 assets；
+  `sourceSets["test"].assets.srcDir("$projectDir/schemas")` 里的 schema 在 Robolectric
+  运行时不可见（Room 只认 instrumentation 的 assets）。
+- 处置：按 migration-plan **§15.5 应急方案**把 T1 整体下沉到
+  `app/src/androidTest/java/com/roundtrace/app/database/MigrationV3ToV4Test.kt`
+  （`@RunWith(AndroidJUnit4::class)`，断言一条未删），`assembleDebugAndroidTest` 已验证可编译。
+- JVM 侧的回填正确性由 **T2** 承担（不碰 `InstrumentationRegistry`：「手工 v3 夹具 + Room 打开触发迁移」）。
+- **未覆盖的缺口**：`@ColumnInfo(defaultValue)` 与 `ALTER TABLE DEFAULT` 的一致性校验只在
+  `MigrationTestHelper.runMigrationsAndValidate` 里做，纯 JVM 无法验证。
+  本轮用「4.json 里 `defaultValue` 实测为 `0`」+「T2 能成功打开迁移后的库（Room 打开时会做
+  `TableInfo` 比对）」双重间接保证；**严格校验仍需一台设备跑 T1**。
+
+## 改动文件
+
+### 生产代码
+
+| 文件 | 改动 |
+|---|---|
+| `core/knowledge/AvalonKnowledgeProvider.kt` | `buildSeatKnowledge` 新增 `observerVisibleEvents`；本人那一格用它，其余仍用 `publicOnlyEvents` |
+| `core/database/dao/MatchDao.kt` | 删除 `updateRevealedAt`（零调用点，是 `revealedAt` 被写 null 的复发入口） |
+| `core/database/entity/MatchEventEntity.kt` | 2 列（`@ColumnInfo(defaultValue = "0")`）+ 1 索引 |
+| `core/database/RoundTraceDatabase.kt` | version 4 + `MIGRATION_3_4` |
+| `core/database/EventCodec.kt` | `encode` 2 个默认参数；`decode` 取 `logicalPosition` |
+| `core/database/dao/MatchEventDao.kt` | `appendWithSlot` / `reviseWithSlot`（替换旧方法）+ `EventSlot` / `RevisionSeed` + 2 条查询 |
+| `core/data/RoomMatchRepository.kt` | 3 个调用点 |
+
+### 测试代码
+
+| 文件 | 改动 |
+|---|---|
+| `test/.../knowledge/PerspectiveLeakExitsTest.kt` | 新增 4 例 |
+| `test/.../database/LegacyV3Database.kt` | 新增：从 `schemas/3.json` 的 DDL 反向生成 v3 夹具 |
+| `test/.../database/MigrationBackfillManualTest.kt` | 新增 4 例 |
+| `test/.../database/DatabaseBackupTest.kt` | 新增 1 例 |
+| `test/.../data/EventSlotAssignmentTest.kt` | 新增 6 例 |
+| `androidTest/.../database/MigrationV3ToV4Test.kt` | 从 `src/test` 移入（7 例，NOT RUN） |
+| `test/.../database/MatchDaoRobolectricTest.kt`、`test/.../data/RoomMatchRepositoryRobolectricTest.kt`、`test/.../audit/CrossMatchWriteIsolationTest.kt`、`androidTest/.../database/MatchDaoTest.kt` | **仅签名适配**，期望值一处未改 |
+
+### 生成物
+
+`app/schemas/.../4.json` **已提交**（`git status` 干净）；`1/2/3.json` 保留。
+
+## 根因
+
+### P2-1 · 观察者丢自己的标签
+
+RT-005 把 `claimLabels` 的事件源一刀切成 `publicOnlyEvents`，堵住了「别人的私有声称外溢」，
+但也把「本人私有声称」一起滤掉了 → `seatKnowledge[4].labels` 只剩 `[SELF]`。
+根因不是过滤方向错，而是**「公开」与「本人可见」被当成了同一件事**。
+
+### RT-003 Step 1 · 两个顺序混为一列
+
+`occurredOrder` 同时承担「时间线位置」与「写入序号」两个语义。
+一旦发生修订，两者必然分叉：修订要在时间线原位置生效，但写入序号必须递增。
+Step 1 的处置是**新增列 + 开始写对值**，不动读路径，因此行为零变化。
+
+## 与任务书的偏差
+
+1. **T1 下沉 androidTest**（automated fallback：migration-plan §15.5 明确授权）。
+2. **`21a153e` 用了 amend**：原提交的注释里 `schemas/*.json` 的 `/*` 触发 Kotlin 嵌套块注释，
+   脚本编译失败。为保证「每个 commit 自身可构建」，对该本地未 push 的提交做了 amend，
+   并在 commit message 里写明原因。
+3. **T3 的语义**：`DatabaseBackupTest` 验证的是「备份产物可只读打开、版本为 3、行数与主库一致」，
+   即**可恢复性**。产品侧目前**没有「迁移前自动备份」的钩子**（需改 Application 启动路径，
+   超出 Step 1 的 6 文件清单）。这一点必须在验收时明确，不能理解成「App 会自动备份」。
+
+## 剩余风险
+
+1. **T1 未在真机跑过** → `defaultValue` 一致性、迁移后 `TableInfo` 校验严格意义上未验证。
+   一旦有设备，必须先跑 `connectedDebugAndroidTest --tests *MigrationV3ToV4Test`。
+2. **自动备份未实现**：迁移前不会自动生成 `roundtrace.db.bak.v3`。当前用户若从 v3 升级到 v4，
+   没有任何回退点（只能靠重装）。建议单列任务，在 Application 启动处接 `MIGRATION_3_4` 前备份。
+3. **`logicalPosition` 目前无人读**：Step 3 之前它是「只写」列。若写入路径有 bug，
+   要等到 Step 3 才会暴露。T4 的 6 例是当前唯一的护栏。
+4. **`nextLogicalPosition` 含 retracted**：撤销后位置不复用，因此位置会「越用越大」，
+   但不会产生空洞（空洞只可能出现在「位置已分配但行被物理删除」，而本项目禁止 DELETE）。
+5. **`decode` 的 `occurredOrder` 已改为取 `logicalPosition`**：Step 1 内两者对所有新建数据相等，
+   对历史含修订数据则不等 —— 读路径仍按列 `occurredOrder` 排序，故行为不变；
+   但**任何依赖「领域 occurredOrder == 列 occurredOrder」的新代码都会踩坑**，Step 3 前需注意。
