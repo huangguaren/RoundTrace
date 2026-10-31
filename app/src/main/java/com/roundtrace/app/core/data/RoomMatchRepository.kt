@@ -189,7 +189,7 @@ class RoomMatchRepository(
                 val currentStatus = matchDao.findById(matchId.raw)?.status
                 val newStatusName = newState.status.name
                 if (currentStatus != newStatusName) {
-                    matchDao.updateStatus(matchId.raw, newStatusName, null, committedAt)
+                    matchDao.updateStatusOnly(matchId.raw, newStatusName, committedAt)
                 }
             }
 
@@ -212,6 +212,10 @@ class RoomMatchRepository(
 
         val targetEntity = eventDao.findById(targetEventId.raw)
             ?: return failed(matchId, RepositoryError.INVALID_SUPERSEDE_TARGET)
+        // P0 RT-002: 校验事件属于指定对局
+        if (targetEntity.matchId != matchId.raw) {
+            return failed(matchId, RepositoryError.INVALID_SUPERSEDE_TARGET)
+        }
 
         val target = try {
             codec.decode(targetEntity)
@@ -253,11 +257,22 @@ class RoomMatchRepository(
     override suspend fun retractEvent(matchId: MatchId, eventId: EventId): AppendResult {
         val existing = eventDao.findById(eventId.raw)
             ?: return failed(matchId, RepositoryError.NOT_FOUND)
+        // P0 RT-002: 校验事件属于指定对局
+        if (existing.matchId != matchId.raw) {
+            return failed(matchId, RepositoryError.NOT_FOUND)
+        }
 
         val committedAt = now
-        database.withTransaction {
-            eventDao.markRetracted(eventId.raw)
-            eventDao.touchMatch(matchId.raw, committedAt)
+        val affected = database.withTransaction {
+            val rows = eventDao.markRetracted(matchId.raw, eventId.raw)
+            if (rows == 1) {
+                eventDao.touchMatch(matchId.raw, committedAt)
+            }
+            rows
+        }
+        if (affected != 1) {
+            // DAO 层的对局归属校验没通过（理论上前置校验已拦住，这里是第二道闸门）
+            return failed(matchId, RepositoryError.WRITE_FAILED)
         }
         return AppendResult(
             matchId = matchId,

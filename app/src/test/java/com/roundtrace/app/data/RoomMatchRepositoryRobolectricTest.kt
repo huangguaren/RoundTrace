@@ -350,4 +350,127 @@ class RoomMatchRepositoryRobolectricTest {
             bundle.roleAssignments.values.all { it.roleId == RoleId.UNKNOWN }
         )
     }
+
+    // ————————————————————————————————————————————————————————
+    // RT-002：跨对局事件写入必须在 DAO 层就被拦住
+    // ————————————————————————————————————————————————————————
+
+    @Test
+    fun markRetractedIsScopedByMatchId() = runBlocking {
+        val matchA = createMatch()
+        val matchB = createMatch()
+        repository.appendEvent(matchA, questStarted(1, "scope-a"))
+        val bEvent = repository.appendEvent(matchB, questStarted(1, "scope-b"))
+
+        // 直接打 DAO：用 A 的 matchId 去撤销 B 的事件
+        val affected = database.matchEventDao()
+            .markRetracted(matchId = matchA.raw, id = bEvent.eventId!!.raw)
+
+        assertEquals("跨对局撤销必须命中 0 行", 0, affected)
+        assertEquals(
+            "B 的事件必须仍然有效",
+            0,
+            database.matchEventDao().listAll(matchB.raw).count { it.retracted }
+        )
+    }
+
+    @Test
+    fun retractEventCannotTouchAnotherMatch() = runBlocking {
+        val matchA = createMatch()
+        val matchB = createMatch()
+        val aEvent = repository.appendEvent(matchA, questStarted(1, "own-a"))
+        val bEvent = repository.appendEvent(matchB, questStarted(1, "own-b"))
+
+        val result = repository.retractEvent(matchA, bEvent.eventId!!)
+
+        assertEquals(
+            "用 A 的身份撤销 B 的事件必须失败",
+            RepositoryError.NOT_FOUND,
+            result.error
+        )
+        assertEquals(
+            "B 的事件不得被撤销",
+            0,
+            database.matchEventDao().listAll(matchB.raw).count { it.retracted }
+        )
+        assertEquals(
+            "A 自己的事件也不该被误伤",
+            0,
+            database.matchEventDao().listAll(matchA.raw).count { it.retracted }
+        )
+        assertNotNull(aEvent.eventId)
+    }
+
+    @Test
+    fun reviseEventCannotTouchAnotherMatch() = runBlocking {
+        val matchA = createMatch()
+        val matchB = createMatch()
+        repository.appendEvent(matchA, questStarted(1, "rev-a"))
+        val bEvent = repository.appendEvent(matchB, questStarted(1, "rev-b"))
+
+        val beforeA = database.matchEventDao().listAll(matchA.raw).size
+        val replacement = questStarted(1, "rev-new").copy(leaderSeat = 3)
+        val result = repository.reviseEvent(matchA, bEvent.eventId!!, replacement)
+
+        assertEquals(
+            "跨对局修订必须被拒绝",
+            RepositoryError.INVALID_SUPERSEDE_TARGET,
+            result.error
+        )
+        assertEquals(
+            "A 不得新增事件",
+            beforeA,
+            database.matchEventDao().listAll(matchA.raw).size
+        )
+        assertEquals(
+            "B 不得被撤销",
+            0,
+            database.matchEventDao().listAll(matchB.raw).count { it.retracted }
+        )
+    }
+
+    @Test
+    fun reviseSupersedeRollsBackWhenTargetBelongsToAnotherMatch() = runBlocking {
+        val matchA = createMatch()
+        val matchB = createMatch()
+        val aEvent = repository.appendEvent(matchA, questStarted(1, "tx-a"))
+        val bEvent = repository.appendEvent(matchB, questStarted(1, "tx-b"))
+
+        var threw = false
+        try {
+            // 绕过仓储前置校验，直接打 DAO：事务内必须先撤销成功才允许插入替代事件
+            database.matchEventDao().reviseSupersede(
+                matchId = matchA.raw,
+                newEntityProvider = { order ->
+                    EventCodec().encode(
+                        questStarted(1, "tx-new"),
+                        matchA,
+                        order
+                    )
+                },
+                oldEventId = bEvent.eventId!!.raw,
+                now = baseEpochMs
+            )
+        } catch (e: IllegalStateException) {
+            threw = true
+        }
+
+        assertTrue("目标不属于本局时必须抛异常以回滚事务", threw)
+        assertEquals(
+            "回滚后 A 不得留下替代事件",
+            1,
+            database.matchEventDao().listAll(matchA.raw).size
+        )
+        assertEquals(
+            "A 原事件仍有效",
+            0,
+            database.matchEventDao().listAll(matchA.raw).count { it.retracted }
+        )
+        assertEquals(
+            "B 原事件仍有效",
+            0,
+            database.matchEventDao().listAll(matchB.raw).count { it.retracted }
+        )
+        assertNotNull(aEvent.eventId)
+    }
 }

@@ -43,6 +43,18 @@ interface MatchDao {
     )
     suspend fun updateStatus(id: String, status: String, revealedAt: Long?, now: Long)
 
+    /** 只更新 status 和 updatedAt，保留已有 revealedAt。 */
+    @Query(
+        "UPDATE matches SET status = :status, updatedAt = :now WHERE id = :id"
+    )
+    suspend fun updateStatusOnly(id: String, status: String, now: Long)
+
+    /** 显式设置/清除揭晓时间。 */
+    @Query(
+        "UPDATE matches SET revealedAt = :revealedAt, updatedAt = :now WHERE id = :id"
+    )
+    suspend fun updateRevealedAt(id: String, revealedAt: Long?, now: Long)
+
     @Query("UPDATE matches SET updatedAt = :now WHERE id = :id")
     suspend fun touch(id: String, now: Long)
 

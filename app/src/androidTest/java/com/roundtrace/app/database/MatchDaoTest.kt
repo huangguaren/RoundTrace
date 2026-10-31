@@ -130,7 +130,7 @@ class MatchDaoTest {
         val stored = database.matchEventDao().listActive(matchId.raw)
         val target = stored.first { it.occurredOrder == order }
 
-        database.matchEventDao().markRetracted(target.id)
+        database.matchEventDao().markRetracted(matchId.raw, target.id)
 
         assertEquals(
             "retracted 事件不得出现在读路径",

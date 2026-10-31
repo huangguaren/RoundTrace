@@ -138,7 +138,7 @@ class MatchDaoRobolectricTest {
         // 撤销中间那条（模拟用户改错）——order 计数器不回退，保证审计链不撞号
         val middle = database.matchEventDao().listActive(matchId.raw)
             .first { it.occurredOrder == 2 }
-        database.matchEventDao().markRetracted(middle.id)
+        database.matchEventDao().markRetracted(matchId.raw, middle.id)
 
         val fourth = appendQuestStarted(3, 4L)
         assertEquals("撤销后新事件仍应顺延", 4, fourth)
@@ -197,7 +197,7 @@ class MatchDaoRobolectricTest {
         appendQuestStarted(0, 1L)
         val target = database.matchEventDao().listActive(matchId.raw).first()
 
-        database.matchEventDao().markRetracted(target.id)
+        database.matchEventDao().markRetracted(matchId.raw, target.id)
 
         assertEquals(
             "retracted 事件不得出现在读路径",
@@ -219,7 +219,7 @@ class MatchDaoRobolectricTest {
         assertEquals(2, database.matchEventDao().countByType(matchId.raw, "QUEST_STARTED"))
 
         val first = database.matchEventDao().listActive(matchId.raw).first()
-        database.matchEventDao().markRetracted(first.id)
+        database.matchEventDao().markRetracted(matchId.raw, first.id)
         assertEquals(
             "撤销后计数应减 1",
             1,
@@ -238,7 +238,7 @@ class MatchDaoRobolectricTest {
         val target = database.matchEventDao().listActive(matchId.raw).first()
         assertEquals("新建事件 retracted 应为 false", false, target.retracted)
 
-        database.matchEventDao().markRetracted(target.id)
+        database.matchEventDao().markRetracted(matchId.raw, target.id)
         val retracted = database.matchEventDao().listAll(matchId.raw).first()
         assertEquals("撤销后 retracted 应为 true", true, retracted.retracted)
         assertNotEquals("读路径与审计链是两份不同视图", 1, database.matchEventDao().listActive(matchId.raw).size)

@@ -58,8 +58,17 @@ abstract class MatchEventDao {
     )
     abstract suspend fun nextOccurredOrder(matchId: String): Int
 
-    @Query("UPDATE match_events SET retracted = 1 WHERE id = :id")
-    abstract suspend fun markRetracted(id: String)
+    /**
+     * 撤销事件，**按对局限定**（RT-002）。
+     *
+     * 只按 `id` 撤销会让「拿 A 局的 matchId 去撤销 B 局的事件」静默生效——
+     * 事件 id 是 UUID 时几乎不可能撞上，但一旦撞上就是跨对局数据损坏，
+     * 而且 SQL 本身没有任何东西阻止它。
+     *
+     * @return 受影响行数：1 = 成功，0 = 事件不属于该对局或不存在
+     */
+    @Query("UPDATE match_events SET retracted = 1 WHERE id = :id AND matchId = :matchId")
+    abstract suspend fun markRetracted(matchId: String, id: String): Int
 
     @Query(
         "SELECT COUNT(*) FROM match_events WHERE matchId = :matchId " +
@@ -105,9 +114,15 @@ abstract class MatchEventDao {
         oldEventId: String,
         now: Long
     ): Int {
+        // 顺序很重要：**先撤销、后插入**。
+        // 撤销不成功（事件不属于本局/已撤销）就直接抛，@Transaction 回滚，
+        // 从而不会留下「替代事件已写入、旧事件仍有效」的重复事实（RT-002）。
+        val affected = markRetracted(matchId, oldEventId)
+        check(affected == 1) {
+            "修订目标不属于本对局或已失效：matchId=$matchId, oldEventId=$oldEventId, affected=$affected"
+        }
         val order = nextOccurredOrder(matchId)
         insert(newEntityProvider(order))
-        markRetracted(oldEventId)
         touchMatch(matchId, now)
         return order
     }
