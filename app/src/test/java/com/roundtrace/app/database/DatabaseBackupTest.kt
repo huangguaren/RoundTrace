@@ -183,16 +183,31 @@ class DatabaseBackupTest {
         }
     }
 
+    /**
+     * 备份只保留**最新一份**，更早版本的 `.bak` 会被清掉。
+     *
+     * 为什么值得测：`deleteOlderBackups` 是唯一「会删用户目录文件」的逻辑，
+     * 写错就是把用户唯一的回退点删了。而且它的触发路径（每次升级只保留一份）
+     * 与「攒了多份备份撑爆存储」只差一个 filter 条件。
+     */
     @Test
-    fun backupSkipsWhenNameIsNull() {
-        // name = null 时不备份（实际库名会回落到默认名，故直接在钩子层断言）
-        backupBeforeMigration(context, null)
+    fun backupPrunesOlderBackupVersions() {
+        val name = "b2-prune.db"
+        val sourceFile = LegacyV3Database.create(context, name) { db ->
+            LegacyV3Database.insertV3Match(db, "m1")
+            LegacyV3Database.insertV3Event(db, "e1", "m1", 1)
+        }
 
-        val stale = context.getDatabasePath("roundtrace.db").parentFile
-            ?.listFiles()
-            ?.filter { it.name.contains(".bak.v") }
-            ?: emptyList()
-        assertTrue("name=null 不得产生任何备份文件，实际=${stale.map { it.name }}", stale.isEmpty())
+        // 造一份「更早版本」的陈旧备份
+        val stale = File(sourceFile.absolutePath + ".bak.v2")
+        stale.writeText("stale backup", Charsets.UTF_8)
+        assertTrue("前置条件：陈旧备份应存在", stale.exists())
+
+        backupBeforeMigration(context, name)
+
+        val fresh = File(sourceFile.absolutePath + ".bak.v3")
+        assertTrue("必须生成当前版本的备份（v3）", fresh.exists())
+        assertTrue("更早版本的备份必须被清理，实际仍存在：${stale.name}", !stale.exists())
     }
 
     @Test

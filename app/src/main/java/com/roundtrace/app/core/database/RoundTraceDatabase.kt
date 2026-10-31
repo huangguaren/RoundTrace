@@ -111,8 +111,7 @@ internal fun warnOnDuplicateActivePositions(db: SupportSQLiteDatabase) {
  * 2. **只备份 v1..v3**：v4 已经是目标版本，不需要备份（也就不会每次启动都复制一遍）。
  * 3. **绝不抛出**：备份失败只 `Log.w`。备份是为了降低风险，不能自己变成新的启动失败源。
  */
-internal fun backupBeforeMigration(context: Context, name: String?) {
-    if (name == null) return
+internal fun backupBeforeMigration(context: Context, name: String) {
     runCatching {
         val dbFile = context.applicationContext.getDatabasePath(name)
         if (!dbFile.exists()) return
@@ -285,10 +284,13 @@ abstract class RoundTraceDatabase : RoomDatabase() {
          * 构造数据库实例。
          *
          * @param context 任意 Context（内部会取 applicationContext）
-         * @param name 数据库名；`null` 表示**不启用迁移前备份**（实际库名仍回落到
-         *        [DATABASE_NAME]）。内存库请用 [buildInMemory]。
+         * @param name 数据库名，默认 [DATABASE_NAME]。
+         *        **库名固定为 [DATABASE_NAME]**——需要内存库请用 [buildInMemory]。
+         *
+         * 签名刻意不接受 `null`：曾经的 `name: String?` 让「传 null 想开内存库」变成
+         * 「打开真实库 + 跳过迁移前备份」，是个静默的坏默认。现在由类型系统消除。
          */
-        fun build(context: Context, name: String? = DATABASE_NAME): RoundTraceDatabase {
+        fun build(context: Context, name: String = DATABASE_NAME): RoundTraceDatabase {
             // ① 迁移前备份：**必须在 databaseBuilder 之前**
             //    （Callback.onOpen 在迁移之后才触发，那时备份已经晚了）
             backupBeforeMigration(context, name)
@@ -296,7 +298,7 @@ abstract class RoundTraceDatabase : RoomDatabase() {
             return Room.databaseBuilder(
                 context.applicationContext,
                 RoundTraceDatabase::class.java,
-                name ?: DATABASE_NAME
+                name
             )
                 // 显式声明 WAL；不调用 fallbackToDestructiveMigration
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
