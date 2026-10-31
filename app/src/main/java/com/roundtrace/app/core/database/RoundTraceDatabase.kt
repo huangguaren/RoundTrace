@@ -27,6 +27,74 @@ import java.io.File
 private const val DB_TAG = "RoundTraceDb"
 
 /**
+ * INV-1 自检命中记录（同一对局同一位置存在多条 active 事件）。
+ *
+ * 只是「观测结果」，不是可修复建议：本项目禁止 DELETE、也不允许自动改历史。
+ */
+internal data class DuplicateSlot(
+    val matchId: String,
+    val logicalPosition: Int,
+    val count: Int
+)
+
+/**
+ * INV-1 自检（RT-003 / migration-plan §14-②）：
+ * **同一 `matchId` 下，每个 `logicalPosition` 至多一条 `retracted = 0` 的事件**。
+ *
+ * 为什么要拆成独立函数：启动期只能「记录」不能「修复」，
+ * 所以必须有办法在**不启动 App** 的前提下断言这个查询是对的（见 `Inv1SelfCheckTest`）。
+ *
+ * 实现要点：
+ * - `LIMIT 20`：异常库可能有大量重复，日志只需要样本，不需要刷屏；
+ * - 只读 `retracted = 0`：被撤销的历史版本本来就会共享同一位置，那是**正常**的。
+ */
+internal fun findDuplicateActivePositions(db: SupportSQLiteDatabase): List<DuplicateSlot> {
+    val result = mutableListOf<DuplicateSlot>()
+    db.query(
+        "SELECT matchId, logicalPosition, COUNT(*) AS c " +
+            "  FROM match_events WHERE retracted = 0 " +
+            " GROUP BY matchId, logicalPosition HAVING c > 1 LIMIT 20"
+    ).use { cursor ->
+        while (cursor.moveToNext()) {
+            result += DuplicateSlot(
+                matchId = cursor.getString(0),
+                logicalPosition = cursor.getInt(1),
+                count = cursor.getInt(2)
+            )
+        }
+    }
+    return result
+}
+
+/**
+ * 启动期执行 INV-1 自检：命中就 `Log.w`，**不修复、不抛异常、不阻断启动**。
+ *
+ * 分层理由：数据库可能已经被前端版本写坏，此时「拒绝启动」比「带着脏数据继续跑」更糟——
+ * 用户会彻底打不开 App。所以这里只留证据，把处置权交给后续版本与备份恢复。
+ */
+internal fun warnOnDuplicateActivePositions(db: SupportSQLiteDatabase) {
+    runCatching {
+        val duplicates = findDuplicateActivePositions(db)
+        if (duplicates.isNotEmpty()) {
+            Log.w(
+                DB_TAG,
+                "INV-1 违反：${duplicates.size} 个位置存在多条 active 事件（只记录，不修复；" +
+                    "可用数据库备份恢复）"
+            )
+            duplicates.forEach { slot ->
+                Log.w(
+                    DB_TAG,
+                    "  matchId=${slot.matchId} logicalPosition=${slot.logicalPosition} " +
+                        "activeCount=${slot.count}"
+                )
+            }
+        }
+    }.onFailure { throwable ->
+        Log.w(DB_TAG, "INV-1 自检本身失败（已忽略，不阻断启动）", throwable)
+    }
+}
+
+/**
  * 迁移前自动备份（migration-plan §14-① 第 5 条）。
  *
  * ## 为什么必须在 `Room.databaseBuilder(...)` **之前**调用
@@ -233,6 +301,15 @@ abstract class RoundTraceDatabase : RoomDatabase() {
                 // 显式声明 WAL；不调用 fallbackToDestructiveMigration
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                 .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                // ② INV-1 自检：只记录，不修复、不阻断
+                .addCallback(
+                    object : RoomDatabase.Callback() {
+                        override fun onOpen(db: SupportSQLiteDatabase) {
+                            super.onOpen(db)
+                            warnOnDuplicateActivePositions(db)
+                        }
+                    }
+                )
                 .build()
         }
 
