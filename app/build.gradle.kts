@@ -65,6 +65,18 @@ android {
         }
     }
 
+    /**
+     * Room 的 `MigrationTestHelper` 要从 **test assets** 里读 `app/schemas` 下的 schema json，
+     * 而 KSP 把 schema 输出到 `app/schemas/`（工程目录，不是 assets 目录）。
+     * 不挂这一行，迁移测试第一次运行就会抛「Cannot find schema file」。
+     *
+     * 纯增量：assets 只进测试变体，不影响 APK 产物。
+     */
+    sourceSets {
+        getByName("test") { assets.srcDir("$projectDir/schemas") }
+        getByName("androidTest") { assets.srcDir("$projectDir/schemas") }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
