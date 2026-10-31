@@ -30,6 +30,7 @@ import com.roundtrace.app.core.model.UnknownItem
 import com.roundtrace.app.core.model.Alignment
 import com.roundtrace.app.core.model.AssassinationRecorded
 import com.roundtrace.app.core.replay.ReplayEngine
+import com.roundtrace.app.core.replay.VisibleEventPolicy
 import com.roundtrace.app.core.rules.GameReducer
 import com.roundtrace.app.core.rules.avalon.AvalonRoleKnowledge
 
@@ -153,14 +154,25 @@ class AvalonKnowledgeProvider(
                 }
         }
 
-        val publicFacts = buildPublicFacts(eventsAtTime)
+        // RT-005：公开事实 / 声称标签 / 缺失项都只允许看 PUBLIC 事件。
+        // 之前这三处各自拿 eventsAtTime（已按时间裁剪，但**未按可见性裁剪**），
+        // 一条 PRIVATE_OBSERVER 的 PlayerClaimed 就会漏进公开视角。
+        val publicOnlyEvents = VisibleEventPolicy.forPerspective(
+            events = eventsAtTime,
+            mode = Perspective.PUBLIC,
+            observerSeat = null
+        )
+
+        val publicFacts = buildPublicFacts(publicOnlyEvents)
         val seatKnowledge = buildSeatKnowledge(
             seats = seats,
             mode = mode,
             observerSeat = observer,
             observerRole = observerRole,
             privateFacts = privateFacts,
-            eventsAtTime = eventsAtTime,
+            // claimLabels 只读声称事件，必须限定为「公开可见」：
+            // 私有声称记的是「我说过这句话」，它不是公开事实，不能给别人贴 CLAIMED_* 标签
+            eventsAtTime = publicOnlyEvents,
             roleTruth = roleTruth
         )
 
@@ -169,7 +181,8 @@ class AvalonKnowledgeProvider(
             observerRole = observerRole,
             observerSeat = observer,
             seatKnowledge = seatKnowledge,
-            eventsAtTime = eventsAtTime,
+            // 缺失项同样只依据公开事实判断（私有事件不该影响「信息不足」的对外结论）
+            eventsAtTime = publicOnlyEvents,
             playerCount = playerCount
         )
 

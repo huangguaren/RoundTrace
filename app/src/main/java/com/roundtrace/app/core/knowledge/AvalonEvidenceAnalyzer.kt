@@ -18,6 +18,7 @@ import com.roundtrace.app.core.model.SeatId
 import com.roundtrace.app.core.model.TeamProposalResolved
 import com.roundtrace.app.core.model.TeamProposed
 import com.roundtrace.app.core.model.TeamVoteRecorded
+import com.roundtrace.app.core.replay.VisibleEventPolicy
 import com.roundtrace.app.core.rules.avalon.AvalonRules
 
 /**
@@ -41,6 +42,14 @@ class AvalonEvidenceAnalyzer(
         snapshot: KnowledgeSnapshot,
         history: List<MatchEvent>
     ): List<EvidenceFinding> {
+        // RT-005：推理只能基于「当前视角看得见」的历史。
+        // 这里再做一次过滤（而不是只依赖调用方），因为 analyze 是公开 API，
+        // 传全量事件进来是最容易犯的错，而这类错不会崩、只会安静地泄漏私有信息。
+        val effectiveHistory = VisibleEventPolicy.forPerspective(
+            events = history,
+            mode = snapshot.mode,
+            observerSeat = snapshot.observerSeat
+        )
         val findings = mutableListOf<EvidenceFinding>()
         val knownGood = snapshot.seatKnowledge
             .filterValues { it.knownAlignment == Alignment.GOOD }
@@ -69,7 +78,7 @@ class AvalonEvidenceAnalyzer(
             }
 
         // —— 逐任务分析 ——
-        val proposals = history.filterIsInstance<TeamProposed>().groupBy { it.questNo }
+        val proposals = effectiveHistory.filterIsInstance<TeamProposed>().groupBy { it.questNo }
         proposals.forEach { (questNo, list) ->
             list.forEach { proposal ->
                 // A01：队伍人数应为 N 人
@@ -115,7 +124,7 @@ class AvalonEvidenceAnalyzer(
         }
 
         // —— 投票与决议 ——
-        history.filterIsInstance<TeamVoteRecorded>().forEach { vote ->
+        effectiveHistory.filterIsInstance<TeamVoteRecorded>().forEach { vote ->
             val computed = rules.decideProposal(
                 approveCount = vote.approveCount,
                 rejectCount = vote.rejectCount,
@@ -138,7 +147,7 @@ class AvalonEvidenceAnalyzer(
             }
         }
 
-        history.filterIsInstance<TeamProposalResolved>().forEach { resolved ->
+        effectiveHistory.filterIsInstance<TeamProposalResolved>().forEach { resolved ->
             if (resolved.decision == ProposalDecision.REJECTED) {
                 findings += EvidenceFinding(
                     id = "A10-${resolved.questNo}-${resolved.proposalNo}",
@@ -154,7 +163,7 @@ class AvalonEvidenceAnalyzer(
         }
 
         // —— 任务结果 ——
-        history.filterIsInstance<MissionResolved>().forEach { mission ->
+        effectiveHistory.filterIsInstance<MissionResolved>().forEach { mission ->
             val questNo = mission.questNo
             val failCount = mission.failCount
             val threshold = rules.failThreshold(snapshot.playerCount, questNo)
@@ -252,7 +261,7 @@ class AvalonEvidenceAnalyzer(
         }
 
         // —— 声称：Claim 永远不是事实（A08）——
-        history.filterIsInstance<PlayerClaimed>().forEach { claim ->
+        effectiveHistory.filterIsInstance<PlayerClaimed>().forEach { claim ->
             if (claim.claimedRole == null) return@forEach
             findings += EvidenceFinding(
                 id = "A08-${claim.eventId.raw}",
@@ -270,7 +279,7 @@ class AvalonEvidenceAnalyzer(
 
         // —— 队长顺延（A09）——
         // 规则期望值只在第 1 个任务有独立事实源（配置的首任队长），其余任务不臆造
-        history.filterIsInstance<TeamProposed>().forEach { proposal ->
+        effectiveHistory.filterIsInstance<TeamProposed>().forEach { proposal ->
             if (proposal.leaderSeat !in 1..(snapshot.playerCount.coerceAtLeast(1))) {
                 findings += EvidenceFinding(
                     id = "A09-${proposal.eventId.raw}",
@@ -297,6 +306,7 @@ class AvalonEvidenceAnalyzer(
         knowledgeProvider: KnowledgeProvider
     ): List<EvidenceFinding> {
         val snapshot = knowledgeProvider.snapshot(match, observer, at, mode)
+        // 事件可见性由 analyze 内部按 snapshot.mode/observerSeat 统一过滤（RT-005）
         // 与快照同一时间边界内的公开事件——**不要**用 match.events（会击穿时间闸门）
         val history = match.events
             .asSequence()
