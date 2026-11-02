@@ -417,3 +417,77 @@ lint 0 error；APK 20,561,927 bytes
 但实现里 `null` 是回落到 `DATABASE_NAME`（内存库走的是 `buildInMemory`）。
 已把 KDoc 改成「`null` = 不启用迁移前备份，库名仍回落到 DATABASE_NAME」，
 避免下一个人照着旧注释误用。
+
+---
+
+# Phase 3 · 阶段 A（RT-006 收口）+ 阶段 B（逻辑顺序切换）
+
+| commit | 内容 |
+|---|---|
+| `fe6c408` | **A**：RT-006 草稿恢复（含 A-1 判据修正、A-2 两个测试） |
+| `a24be16` | **B-1**：读路径切到逻辑位置 |
+| `3d8ea46` | **B-2**：一次性投影刷新 |
+
+基线 `9e1b568`（271）→ 现 **290 用例 / 0 失败 / lint 0 error**。
+
+## A：RT-006 收口
+
+`draftTouchedByUser` 标记取代「草稿是否为空」的判据（`RecordViewModel.kt:76/144/212`）：
+用户「选中又全部取消」是一次有效操作，不能被旧草稿覆盖。
+新增 `restoreDoesNotOverwriteClearedInput`、`draftWithUnknownFieldsStillDecodes`。
+
+## B-1：读路径切换（唯一改变用户可观察行为的一步）
+
+| 文件 | 改动 |
+|---|---|
+| `EventCodec.decode` | 领域 `occurredOrder` 取 `logicalPosition`（整步唯一开关） |
+| `MatchEventDao` | `observeActive`/`listActive`/`listAll` 排序改 `(logicalPosition, revisionSeq)`；`listActiveUpTo` 改比 `logicalPosition` 且**参数改名** |
+| `RoomMatchRepository.buildBundle` | 实体层先按 `(position ASC, revisionSeq DESC, recordedAt ASC, id ASC)` 排序再 `distinctBy(position)`；去重必须在 decode 前（领域事件没有 revisionSeq） |
+| `MatchBundle` | 五条顺序契约写进 KDoc（含「`size` 不保证等于 `MAX(position)`」） |
+| `ReplayEngine`/`TimelineBuilder` | **零代码改动**，只改 `@param upTo` 注释（原描述切换后是假的） |
+| `MatchRepository.AppendResult` | `occurredOrder` 裁定为**写入序号**并写死理由 |
+
+测试：冻结用例翻转为 `step3_decodedOccurredOrderFollowsLogicalPosition`；
+新增 `RevisionOrderSemanticsTest`（U1–U4）+ `MatchBundleOrderContractTest`（五契约 + 去重确定性）。
+
+## B-2：一次性投影刷新
+
+`SettingsRepository.projectionOrderModelVersion`（DataStore，默认 0）+
+`MatchRepository.recomputeAllProjections()` + `AppContainer` 后台触发。
+
+**关键取舍**：新增 `MatchDao.updateStatusKeepTimestamp`（只改 status，不碰 updatedAt）。
+若走 `updateStatusOnly`，所有老对局的「最近活动时间」会被刷成现在、首页排序全乱——
+一个「数据修复」把列表搞乱，比不修更难解释。`refreshRealignsStatusButLeavesUpdatedAtUntouched`
+专门钉这一点。
+
+## 验收
+
+```
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
+BUILD SUCCESSFUL
+TOTAL tests=290 failures=0    lint 0 error
+git status --short app/schemas   → （无输出，纯代码改动）
+```
+
+**K01–K10 回归**（§17.6 要求逐条对比）：`com.roundtrace.app.knowledge.*` 共 **48 例 / 0 失败**，
+各类用例数与切换前**完全一致**（9/4/4/4/4/10/4/9），**没有任何期望值被修改**——
+这是「顺序切换没有破坏视角隔离」最硬的证据。
+
+## 过程中的两个真实缺陷（都是我自己写测试时踩的）
+
+1. `ProjectionRefreshTest` 跨对局复用同一批事件 id → `SQLiteConstraintException`
+   （`match_events.id` 是全局主键）。改为按对局加 tag 前缀。
+2. 同一用例先前用 `matchEventDao.appendWithSlot` 直插事件，不触发 `recomputeProjectionLocked`，
+   `matches.status` 停在 `DRAFT`，导致「三次失败应为 FINISHED_EVIL」的前提不成立。
+   改为走真实写入路径 `repository.appendEvent`。
+
+## 剩余风险
+
+1. **T1 `MigrationV3ToV4Test` 仍 NOT RUN**（androidTest，无设备）：`defaultValue` 一致性的严格校验
+   只有 `runMigrationsAndValidate` 能做。
+2. **`recomputeAllProjections` 目前未做进度/中断保护**：几千局时会在后台跑较久；
+   失败不写标记、下次重试，但没有断点续传。
+3. **`projectionOrderModelVersion` 写成功但刷新其实部分失败的情形**：当前实现是
+   「逐局 runCatching，全部跑完就写标记」，**单局失败会被吞掉**。若某局数据损坏导致重放抛异常，
+   标记仍会被写成 1，该局永久停在旧结论。**这是本轮引入的真实缺陷**，
+   建议下一轮改为「有任一失败就不写标记」。
