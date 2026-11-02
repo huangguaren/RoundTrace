@@ -337,4 +337,42 @@ class EvidencePremiseTest {
             quest1.any { it.id == "A12-fail-1" }
         )
     }
+
+    @Test
+    fun `A06 非法失败牌数（99张）不给出确定性坏人数量`() {
+        val findings = analyze(
+            MatchBuilder.eightPlayerMerlinMordred().questCycle(
+                questNo = 1,
+                leaderSeat = 1,
+                teamSeats = listOf(1, 2),
+                failCount = 99,
+                observedOutcome = MissionOutcome.FAILED,
+                missionTeamSeats = listOf(1, 2)
+            )
+        )
+        val quest1 = findingsForQuest(findings, questNo = 1)
+        assertFalse(
+            "failCount=99 非法，不应给出 A06 确定性结论",
+            quest1.any { it.ruleId == AvalonEvidenceAnalyzer.RULE_A06 }
+        )
+    }
+
+    @Test
+    fun `A06 负失败牌数（-1）不给出确定性结论`() {
+        val findings = analyze(
+            MatchBuilder.eightPlayerMerlinMordred().questCycle(
+                questNo = 1,
+                leaderSeat = 1,
+                teamSeats = listOf(1, 2),
+                failCount = -1,
+                observedOutcome = MissionOutcome.SUCCESS,
+                missionTeamSeats = listOf(1, 2)
+            )
+        )
+        val quest1 = findingsForQuest(findings, questNo = 1)
+        assertFalse(
+            "failCount=-1 非法，不应给出 A06 确定性结论",
+            quest1.any { it.ruleId == AvalonEvidenceAnalyzer.RULE_A06 }
+        )
+    }
 }

@@ -191,7 +191,10 @@ class AvalonEvidenceAnalyzer(
 
             // A06：f 张失败牌 → 队伍内至少 f 名坏人。
             // 座位名单畸形（越界/重复）时抑制——「这支队伍」的名单本身不可信（A12-team 会说明）。
-            if (premise.failCountKnown && (premise.failCount ?: 0) > 0 && !premise.seatsMalformed) {
+            // failCount 非法（超出 0..队伍人数）时也抑制——不能从 99 张失败牌推出 99 名坏人。
+            if (premise.failCountKnown && (premise.failCount ?: 0) > 0 &&
+                !premise.seatsMalformed && premise.derivedOutcome != null
+            ) {
                 val fail = premise.failCount ?: 0
                 findings += EvidenceFinding(
                     id = "A06-$questNo",
