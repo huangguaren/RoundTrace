@@ -1283,10 +1283,513 @@ feat(db): RT-003 Step 1 —— logicalPosition/revisionSeq 加列、v4 迁移与
 
 ---
 
+## 16. Step 1 复核（架构师，只读）
+
+> 复核基线：`main` @ `a447a44`（被复核提交 `21a153e` + `759e133`）；**后续修复提交 `7fd8758`（fix(db): freeze Step 1 read semantics）+ `ec5078d`（文档）已并入，见 §16.1-5 与 §16.2 的状态更新**。
+> 方法：**只读**源码 + 用 `python3` 的内置 SQLite（3.53.1）**逐条执行**迁移 SQL 做语义验证（6 组夹具）。
+> **未跑 Gradle 构建、未改任何 `app/` 文件**。凡涉及"测试是否通过"的结论，均标注为「静态推演」并给出可复核的证据链。
+
+### 16.1 六条逐条裁决
+
+| # | 复核项 | 裁决 |
+|---|---|---|
+| 1 | DEFAULT 一致性 | **PASS** |
+| 2 | 回填 CTE 正确性 | **PASS**（4/5 子项 PASS，1 子项为覆盖缺口，见 16.3-c） |
+| 3 | 索引 | **PASS** |
+| 4 | 写入双序 | **PASS**（1 处防御性建议，见 16.3-a） |
+| 5 | `decode` 取 `logicalPosition` 是否该现在生效 | **已修复**（`7fd8758`，261 用例全绿）—— 复核时判定为阻塞，工程师已按本节证据链回退并补上冻结用例 |
+| 6 | 迁移不可逆 + 无备份 | **已验收**（B2 `7707149` 备份钩子 / B3 `674d95a` INV-1 自检，271 用例全绿）—— 复核时判定为阻塞，两项均已落地并验收 |
+
+---
+
+#### 1. DEFAULT 一致性 —— **PASS**
+
+| 位置 | 内容 |
+|---|---|
+| `RoundTraceDatabase.kt:95` | `ALTER TABLE \`match_events\` ADD COLUMN \`logicalPosition\` INTEGER NOT NULL DEFAULT 0` |
+| `RoundTraceDatabase.kt:98` | `ALTER TABLE \`match_events\` ADD COLUMN \`revisionSeq\` INTEGER NOT NULL DEFAULT 0` |
+| `MatchEventEntity.kt:63` | `@ColumnInfo(defaultValue = "0") val logicalPosition: Int` |
+| `MatchEventEntity.kt:66` | `@ColumnInfo(defaultValue = "0") val revisionSeq: Int` |
+| `schemas/…/4.json` | `logicalPosition`: `notNull=true, defaultValue="0"`；`revisionSeq`: `notNull=true, defaultValue="0"` |
+
+四处逐字一致（DEFAULT 与注解同为零、无引号、无空格差异）。**我标的最易翻车点已守住。**
+
+附加确认：两个新字段**未给 Kotlin 默认值**（符合 §15.6-D2），因此任何漏传都是编译错误而非静默脏行。
+
+#### 2. 回填 CTE —— **PASS**
+
+**a) 语法在 minSdk 26 合法 —— PASS**
+`WITH RECURSIVE`（3.8.3+）与「CTE + UPDATE」同属 3.8.3 引入的能力；Android 8.0（API 26）自带 SQLite 3.18+，满足。已在 SQLite 3.53.1 上实跑通过。
+⚠️ 残余风险：**未在 API 26 真机实测**（本机无设备）。这正是 §11-R1 的预案场景，建议接设备时在 API 26 / 30 / 34 各跑一次 `androidTest/MigrationV3ToV4Test`。
+
+**b) 链根取值 —— PASS**
+根 = `supersedesId IS NULL`。写入路径保证修订行的 `occurredOrder = MAX+1` 恒大于父行，故**根的 `occurredOrder` 必然是整条链中最小者**，「最老版本」成立。实测（两层链）：E1(order 1,seq 0)、E2(order 6,seq 1)、E3(order 7,seq 2)，三者 `logicalPosition` 全为 **1**。
+
+**c) 孤儿链 —— PASS（不中断迁移）**
+实测：`E2.supersedesId='ghost'`（不存在）→ `logicalPosition` 回退为自身 `occurredOrder`（2），`revisionSeq` 回退 0，**未抛异常、迁移继续**。兜底由 `COALESCE(..., occurredOrder)` / `COALESCE(..., 0)` 完成，与 `RoundTraceDatabase.kt:103-113/117-127` 的写法一致。
+
+**d) 环状 `supersedesId` —— PASS（结构上不可达，不会无限递归）**
+实测：造 `A→B`、`B→A`（两者 `supersedesId` 均非空）后跑迁移，**瞬间完成**，A/B 各自回退为自身 `occurredOrder`，无递归、无卡死。
+
+原因（这是比"实测通过"更强的论证）：递归的**种子集是 `supersedesId IS NULL` 的行**，而环上每个节点的 `supersedesId` 都非空，因此**环永远不在种子集里，也无法从任何种子到达**——A 要能从种子到达，就必须存在某条链 `R→…→A`，而 A 的父已是 B、B 的父已是 A，两者互相占位，没有空隙接纳外部父节点。
+
+现有写入路径**也不可能造出环**：`reviseWithSlot` 只把新事件（新 UUID）指向一个**已存在且更早插入**的事件，`supersedesId` 的指向关系严格沿时间递增，构成有向无环图。
+
+**e) 空表 / 单行 / 链深 > 2 —— 部分覆盖**
+- 空表：实测 0 行时两条 UPDATE 为 no-op，不报错 —— **PASS**
+- 链深 > 2：实测 4 层链 + 根扇出，`revisionSeq` = 0/1/2/3/4 —— **PASS**
+- **单行**：迁移 SQL 层面无差异（种子命中、链长 1），但 `MigrationV3ToV4Test` 未见显式单行用例 —— 属覆盖缺口，不阻塞（16.3-c）
+
+#### 3. 索引 —— **PASS**
+
+`4.json` 声明与 `MIGRATION_3_4` 创建完全一致：
+
+| 索引名 | 列顺序 | unique |
+|---|---|---|
+| `index_match_events_matchId_logicalPosition_revisionSeq` | `matchId, logicalPosition, revisionSeq` | false |
+| `index_match_events_matchId_occurredOrder` | `matchId, occurredOrder` | false（保留） |
+| `index_match_events_matchId_eventType` | `matchId, eventType` | false（保留） |
+| `index_match_events_supersedesId` | `supersedesId` | false（保留） |
+
+`CREATE INDEX IF NOT EXISTS` 实测连续执行两次无异常、不重复创建 —— 幂等成立（`RoundTraceDatabase.kt:131-134`）。
+补充：Room 的迁移整体在 SQLite 事务内执行（`SQLiteOpenHelper` 包裹 `onUpgrade`），中途抛错会整体回滚，因此「ADD COLUMN 撞车」只可能发生在**外部改过 `user_version`** 的场景，不是常规路径。
+
+#### 4. 写入双序 —— **PASS**
+
+| 路径 | `occurredOrder` | `logicalPosition` | `revisionSeq` |
+|---|---|---|---|
+| `appendWithSlot`（`MatchEventDao.kt:121-134`） | `nextOccurredOrder` = MAX+1 | `nextLogicalPosition` = MAX+1 | `0` |
+| `reviseWithSlot`（`MatchEventDao.kt:143-167`） | `nextOccurredOrder` = MAX+1 | **`seed.logicalPosition`（继承）** | **`seed.revisionSeq + 1`** |
+
+- `nextLogicalPosition`（`:83-84`）**不带 `retracted = 0`**，取全表 MAX —— 正确：撤销后位置不会被复用，避免「新事件抢占已废弃位置」。注释（`:77-82`）已写明理由。
+- RT-002 收口**未退化**：`markRetracted(matchId, id)`（`:98-99`）仍带 `matchId` 且返回受影响行数；`reviseWithSlot:160-163` 仍 `check(affected == 1)`。
+- 一处**改进**（超出清单、但更正确）：把 `markRetracted` 移到 `insert` **之前**（`:160` vs `:164`）。若撤销失败先抛，`@Transaction` 回滚，不会留下「替代事件已写入、旧事件仍有效」的重复事实窗口。这比 §15.2-④ 的顺序更强，予以确认。
+
+**一处防御性建议（不阻塞）**：`findRevisionSeed`（`:86-87`）未过滤 `retracted = 0`，DAO 级直调可以对一条已被撤销的事件再发起修订，从而在同一 `logicalPosition` 造出**两个 active 版本**（`revisionSeq` 也可能撞号）。现实路径无风险——`EventRevisionPolicy.kt:66` 会以 `TARGET_RETRACTED` 拒绝——但建议把 `AND retracted = 0` 补进该查询，让约束落在 SQL 而不是依赖上层调用顺序（16.3-a）。
+
+#### 5. `decode` 取 `logicalPosition` 是否该现在生效 —— **已修复（`7fd8758`）**（复核时判定：FAIL / 阻塞）
+
+**复核结论：主理人裁决正确，应当回退为 `entity.occurredOrder`。** 但我要把理由换掉：**不是"越界"，而是"读路径其实已经切了，只是被一行注释掩盖了"**。
+
+> **本项当前状态：已修复。** 工程师已按本节证据链回退，提交 `7fd8758`（`fix(db): freeze Step 1 read semantics`），`ec5078d` 记录越界原因。主理人本地 `--rerun-tasks` 全量复跑（非缓存）结果：`tests=261 failures=0 errors=0`。冻结用例现为**绿**，四条断言全部成立：`occurredOrder == 6`、`!= logicalPosition(5)`、`replay(upTo = 5)` 不含它、`upTo = 6` 才含。
+> 现 `grep -rn "logicalPosition" app/src/main` 只剩五类用途：Entity 字段/索引定义、`EventCodec.encode` 写入、`nextLogicalPosition` 分配、`findRevisionSeed` 的写入侧种子、`MIGRATION_3_4` 的 DDL；`core/replay`、`core/knowledge`、`feature/` **零出现** —— Step 1 的读语义确实冻结。
+
+**反证（代码注释的前提不成立）**
+
+`EventCodec.kt:249-251` 当时的注释称：「读路径仍按列 `occurredOrder` 排序，故可观察行为不变」。这条推理**漏掉了一次内存重排**：
+
+1. `RoomMatchRepository.buildBundle:468` → `.map { codec.decode(it) }`，即**所有读路径的领域事件都来自 `decode`**；
+2. `buildBundle:469` → `.sortedBy { it.occurredOrder }`（此时 `occurredOrder` 已 = `logicalPosition`）；
+3. `ReplayEngine.kt:33` → `.sortedWith(compareBy({ it.occurredOrder }, …))` —— **重放自己按领域字段重排，根本不看数据库返回的顺序**；
+4. `TimelineBuilder.kt:46` → 同样按领域 `occurredOrder` 重排。
+
+所以「DB 的 `ORDER BY occurredOrder` 没改」**完全不影响结论**：只要 `decode` 把 `logicalPosition` 灌进领域 `occurredOrder`，重放与时间线的顺序**立刻**变成逻辑顺序，RT-003 的修复**提前上线**。这一条也是我复核时比"越界"更想强调的点：**`ORDER BY` 是否修改，不能用来论证读语义是否冻结。**
+
+**受影响路径（3 条，若不回退都会立刻改变行为）**
+
+| 路径 | 影响 |
+|---|---|
+| `ReplayEngine.replay(upTo)`（`:32`） | `upTo` 与事件比较的是领域字段；一条「位置 5 / 写入序号 6」的修订，在 `upTo = 5` 时**从此被算进去**（改造前不算）。`upTo` 语义提前从「写入序号」变为「逻辑位置」 |
+| `matches.status` 投影 vs 运行时派生状态 | RT-004 的投影是**写入时**按旧顺序算好并冻结的；升级后读路径按新顺序重算，同一个对局可能得出**不同** status。首页卡（读 `matches.status`）与记录页/复盘页（读 replay 派生）会出现**不一致窗口**，直到该局下次写入才被 `recomputeProjectionLocked` 覆盖 |
+| 时间线选中位置 | `TimelineEntry.occurredOrder` 的数值含义变了（写入序号 → 逻辑位置），任何跨版本保存的选点/书签会指向不同的事件 |
+
+**冻结用例（`7fd8758` 新增，是本次修复的验收钩子）**
+
+`test/.../data/EventSlotAssignmentTest.kt:255` 的 `step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition`：
+
+- `:266-270` 领域 `occurredOrder` **必须等于** `slot.occurredOrder`（= 6，写入序号）
+- `:271-275` 领域 `occurredOrder` **不得等于** `slot.logicalPosition`（= 5）
+- 该类带 `@RunWith(RobolectricTestRunner::class)`、`@Config(sdk = [34])`，用**真实 Room + 真实 RoomMatchRepository**（`:48-68`），无 `@Ignore`
+
+**一处必须更正的判断（我的错）**：我复核时写「按 HEAD 它必红」，并据性质疑 `progress.md` 的「260 全绿」。**这个质疑是错的，现更正。**
+
+- 该冻结用例是**随修复一起**在 `7fd8758` 新增的（该提交给 `EventSlotAssignmentTest.kt` +63 行）；在复核基线 `a447a44` 上它**并不存在**，`a447a44` 的 260 条用例全绿成立。
+- 我当时看到的 `:255` 是**工作区里尚未提交的新增用例**（主理人发出回退指令后工程师正在写），我把"工作区"误当成了"HEAD"。`git show a447a44:<该文件> | grep step1_decoded…` 返回空，可复核。
+- 教训记在这里：复核期间若 `git status` 出现 `app/` 变动，任何"HEAD 必红/必绿"的判断都必须以 `git show <commit>:<path>` 为准，而不是读工作区文件。
+
+> 回退之后，`decode` 取列 `occurredOrder`，领域顺序 = 写入序号，Step 1 的读语义与改造前**逐字节一致**；Step 3 切换读路径时，把这一行改成 `entity.logicalPosition`，并同步更新该 `step1_` 冻结用例（去掉 `step1_` 前缀、翻转期望）。
+
+#### 6. 迁移不可逆 + 无备份 —— **已验收（B2 `7707149` / B3 `674d95a`）**
+
+| 事实 | 证据 | 状态 |
+|---|---|---|
+| 迁移前无任何备份 | 复核时 `a447a44` 的 `build()` 只有 `setJournalMode` + `addMigrations` | **✅ 已验收**：`backupBeforeMigration(...)` 在 `RoundTraceDatabase.kt:114`，于 `:296`（`Room.databaseBuilder(...)` 之前）调用；含 `wal_checkpoint(TRUNCATE)` 与「只留最新一份」清理（`:160 deleteOlderBackups`） |
+| 无 INV-1 启动自检 | 复核时 main 源码无自检 | **✅ 已验收**：`warnOnDuplicateActivePositions(...)` 在 `RoundTraceDatabase.kt:75`（查询 `findDuplicateActivePositions` `:51`），于 `:311` 的打开回调中执行；命中只 `Log.w`，**不修复、不抛、不阻断启动** |
+| v4 后旧 APK 打不开 | `4.json` 的 `identityHash = ecef4a0671db77d700f3c83047959346` 与 v3 的 `012b543edd3715ab981a6f8b5c812a1e` 不同；降级安装时 Room 校验必然失败 | 设计事实，非缺陷 |
+| 无 destructive fallback | ✅ 已守住（未调用 `fallbackToDestructiveMigration`） | PASS |
+
+这两条正是 **§14-①（主理人裁决）P0 档的第 4、5 条**，现均已落地，**§14-① 的 P0 五条到位**。
+
+> 遗留一项验收细节（不算阻塞，见 §16.3-b / §17.6）：`DatabaseBackupTest` 目前仍自造 v3 库再自复制，未走生产 `RoundTraceDatabase.build(...)` 路径。生产钩子已存在且被调用，建议在 Step 3 顺手把该用例改成走真实路径，才算"备份真的被测到"。
+
+最小可行备份钩子见 §16.4。
+
+### 16.2 问题清单与状态（3 条：全部关闭）
+
+| # | 问题 | 证据 | 修法 | **状态** |
+|---|---|---|---|---|
+| **B1** | `decode` 提前切读路径，导致 RT-003 修复在 Step 1 就生效 | `EventCodec.kt:252`（`a447a44`）；反证链见 §16.1-5 | 改回 `occurredOrder = entity.occurredOrder`（1 行） + 新增冻结用例 | **✅ 已修复**：`7fd8758`（同时回退 decode、新增冻结用例），`ec5078d` 记录原因；261 用例全绿 |
+| **B2** | 迁移前无备份钩子 | `a447a44` 的 `build()` 无备份逻辑 | 按 §16.4 加 `backupBeforeMigration(...)` | **✅ 已验收**：`7707149`；实现于 `RoundTraceDatabase.kt:114`，调用点 `:296`（builder 之前），含 WAL checkpoint 与旧备份清理 |
+| **B3** | 无 INV-1 启动自检（§14-① P0-4） | `a447a44` 的 main 源码无自检实现 | 打开回调中跑一次重复位置查询，命中只 `Log.w` | **✅ 已验收**：`674d95a`；`warnOnDuplicateActivePositions` `:75`（查询 `:51`），调用点 `:311` |
+
+> **Step 1 收口结论**：读语义冻结由 `step1_` 冻结用例长期守住；备份与自检就位；271 用例全绿。Step 1 可以结项。
+
+**关于「260 全绿」的更正（我的误判）**：复核收尾时工作区出现了未提交的 `M core/database/EventCodec.kt` 与
+`M test/.../EventSlotAssignmentTest.kt`（工程师正在按回退指令动手）。我当时读了工作区文件，误把
+新增的 `step1_` 冻结用例当成 HEAD 已存在，进而质疑 `progress.md` 的「260 全绿」。
+经 `git show a447a44:<该测试文件> | grep step1_decoded…`（返回空）核实：**该用例在 `a447a44` 上并不存在，
+260 全绿成立，我的质疑作废**。判定方法与教训已记入 §16.1-5。
+
+### 16.3 可后续（5 条，不阻塞）
+
+| # | 事项 | 说明 |
+|---|---|---|
+| a | `findRevisionSeed` 加 `AND retracted = 0` | 让「不能修订已撤销事件」落在 SQL 层，而不是只靠 `EventRevisionPolicy` 的上层顺序。当前无现实风险 |
+| b | `MigrationV3ToV4Test` 落在 **androidTest** | 本机无设备 → **从未执行**。而它是唯一能验证 `@ColumnInfo(defaultValue)` 与表结构一致性的用例（即本次最易翻车点的把关人）。建议：接设备时优先跑；或加一条 Robolectric 版 T1（`MigrationTestHelper` 在 JVM 下可尝试） |
+| c | 单行库用例 | Q2-e 要求覆盖"单行"，迁移 SQL 语义上无差异，但 `MigrationV3ToV4Test` 未见显式用例 |
+| d | **本文档 INV-2 措辞勘误**（我的错） | §2.1 写的「有效版本 `logicalPosition` 连续无空洞」**在撤销发生后不成立**：撤销会留下 dormant 位置（如 active = 1,2,4,5）。正确表述应为「`logicalPosition` 一经分配永不复用；`MAX(logicalPosition) <= 总行数`；active 集合允许空洞」。代码行为（`nextLogicalPosition` 取全表 MAX）是正确的，是文档说错了 |
+| e | 迁移不校验同位置唯一性 | v4 刻意不建唯一索引（避免脏历史让迁移整库失败），由 B3 的自检兜住。属已记录取舍 |
+
+### 16.4 备份钩子最小方案（供后续任务）
+
+**放哪里**：`RoundTraceDatabase.kt` 的 `companion object`，在 `build()` **最开头**调用（必须在 `Room.databaseBuilder(...).build()` 之前——`onOpen` 回调太晚，迁移已经执行完了）。`buildInMemory` 不需要。
+
+**为什么不能放 Room 回调**：`RoomDatabase.Callback.onCreate/onOpen` 都在迁移之后触发。
+
+**约 25 行（纯文件操作，无 Room API 依赖）**：
+
+```kotlin
+/** 迁移前做一次文件级备份；任何失败都只记日志，绝不阻断启动。 */
+private fun backupBeforeMigration(context: Context, dbName: String) {
+    runCatching {
+        val dbFile = context.getDatabasePath(dbName)
+        if (!dbFile.exists()) return                       // 首次安装
+
+        var version = 0
+        // 用可写连接：WAL 模式下必须先 checkpoint，否则 -wal 里的事务不会进主库文件
+        SQLiteDatabase.openDatabase(dbFile.path, null, SQLiteDatabase.OPEN_READWRITE)
+            .use { db ->
+                db.rawQuery("PRAGMA user_version", null).use { c ->
+                    if (c.moveToFirst()) version = c.getInt(0)
+                }
+                // 无 WAL 时是 no-op
+                db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+            }
+        if (version >= TARGET_VERSION) return              // 已是新库，无需备份
+
+        val bak = File(dbFile.parentFile, "$dbName.bak.v$version")
+        dbFile.copyTo(bak, overwrite = true)
+        // 只保留最新一份，避免磁盘膨胀
+        dbFile.parentFile?.listFiles()
+            ?.filter { it.name.startsWith("$dbName.bak.v") && it != bak }
+            ?.forEach { it.delete() }
+    }.onFailure { Log.w("RoundTraceDb", "迁移前备份失败（不影响启动）", it) }
+}
+```
+
+要点四条：
+1. **必须 `wal_checkpoint(TRUNCATE)`**，否则备份出的是缺最近事务的库（WAL 已启用，见 `:151`）；
+2. 连接必须可写（`OPEN_READWRITE`），只读连接无法 checkpoint；
+3. 覆盖式只留一份（`overwrite = true` + 清理旧 bak）；
+4. 全流程 `runCatching`，**备份失败不阻断启动**——备份是兜底，不是前置条件。
+
+配套验证：已有 `DatabaseBackupTest.kt`（`:32 v3BackupFileIsReadableAndMatchesSource`），但目前它备份的是**它自己造的** v3 库，并未校验生产钩子是否存在。建议在 B2 落地后，把该用例改成调用 `RoundTraceDatabase.build(...)` 走真实路径，否则"备份"永远只有测试而没有生产实现。
+
+### 16.5 对主理人裁决的独立判断（逐条）
+
+| 你的裁决 | 我的判断 | 理由 |
+|---|---|---|
+| **Q5 判 `decode` 提前生效为越界，应改回列 `occurredOrder`** | **同意（已按此修复）** | 但理由要换：不是"越界"，而是「注释声称读路径不变，实际 `ReplayEngine`/`TimelineBuilder` 按领域字段重排，读路径**已经**变了」。已由 `7fd8758` 回退并加冻结用例（§16.1-5） |
+| Q1 DEFAULT 是最易翻车点（你让我重点验） | **同意，且已守住** | 四处逐字一致，`4.json` 的 `notNull/defaultValue` 正确 |
+| Q6 迁移不可逆 + 无备份 | **同意，且比你说的更严重** | 不只没备份，§14-① 要求的 INV-1 自检也没有（B3）；两条已下达，待验收 |
+| 你未提及：`MigrationV3ToV4Test` 在 androidTest 永不执行 | **提请关注** | 它是最易翻车点的唯一把关人，本机永远不会跑到（16.3-b） |
+| 我提出「按 HEAD 冻结用例必红、260 全绿可疑」 | **我判断错了，作废** | 该用例随 `7fd8758` 新增；`a447a44` 上不存在，260 全绿成立。详见 §16.1-5 的更正与 §16.2 的说明 |
+
+### 16.6 复核结论
+
+- **3 条问题全部关闭**：B1（`decode` 冻结，`7fd8758`）、B2（备份钩子，`7707149`）、B3（INV-1 自检，`674d95a`）。**Step 1 结项。**
+- **可后续 5 条**：其中 (d) 是我的文档错误，已在 §16.3 记录勘误；(b) 的 `DatabaseBackupTest` 建议在 Step 3 顺手改为走真实 `build()` 路径。
+- **迁移 SQL 本身是干净的**：DEFAULT 一致、回填语义正确、孤儿与环都不会让迁移卡死或中断、索引与 schema 声明一致、写入双序正确且 RT-002 收口未退化。**Step 1 的数据层设计通过。**
+- **我的两处判断需要留档**：① 「`ORDER BY` 未改 ⇒ 读语义未变」这个推理是错的（内存重排才是决定性的）；② 复核期间工作区有未提交改动时，必须用 `git show <commit>:<path>` 取证据，不能读工作区。
+
+> 一句话给工程师：**Step 1 已结项；下一步见 §17（Step 3 切换读路径）。**
+
+---
+
+## 17. 实施清单：Step 3（切换读路径）
+
+> 基线：`main` @ `e3256c6`（Step 1 已结项：`7fd8758` 冻结、`7707149` 备份、`674d95a` 自检，271 用例全绿）。
+> **这是 RT-003 唯一会改变用户可观察行为的一步。** Step 1/2 是纯加法，Step 4 只是注释；只有本节会改变「时间线顺序、复盘选点、状态派生、导出顺序」。
+> 因此本节的每一条语义都必须**写死并配可测断言**，不允许"实现时再看"。
+
+> ## ⚠️ 发版铁律：**Step 3 绝不能与 Step 1 分开发版**
+>
+> - DB 已升到 v4（`identityHash` 变更）→ **降级安装旧 APK 必然打不开**（§16.1-6）；因此 Step 1 一旦发出去，就必须有 Step 3 紧随其后作为"行为修复的真正落点"。
+> - 只发 Step 1 = 付出了 schema 变更的全部风险（迁移不可逆 + 旧 APK 不兼容），却**没有得到 RT-003 的任何用户可见收益**（修订仍排在时间线末尾）；只发 Step 3 = 不可能，因为它依赖 Step 1 写入的两列。
+> - 发布检查项：`app/schemas/…/4.json` 与 `EventCodec.decode` 的切换必须出现在**同一个 versionName / versionCode** 里。若必须分两次发，则 Step 3 的版本号必须紧邻且不允许中间插入其它发版。
+
+### 17.0 前置条件（不满足不要开工）
+
+| # | 条件 | 理由 |
+|---|---|---|
+| P1 | Step 1 已结项（`logicalPosition`/`revisionSeq` 已双写、备份与自检在位） | 否则切换后没有正确的数据可读 |
+| P2 | `step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition` **在场且为绿** | 它是切换的"起跑线标记"：切换时把它改写为 `step3_…`，改写本身就是本次变更的一部分 |
+| P3 | 已跑过一次 `--rerun-tasks` 记录 **N₀ = 271** | 验收用实际基线，不写死数字 |
+| P4 | 无 `app/` 未提交改动 | 本节改动会与 RT-004/RT-005 的痕迹混淆，无法单独 revert |
+| P5 | **RT-006（草稿恢复）已交付** | 避免两个改动同时跑 Gradle 互踩 build 目录；Step 3 排在 RT-006 之后执行 |
+| P6 | RT-005 已合入（`017b98e` + `73ffc84`，QA 16 条对抗测试验过） | 已满足。R1「视角过滤与顺序切换叠加」的风险由此解除，但**K01–K10 的基线/差异解释仍必须做**（见 §17.6 第 2 步） |
+
+### 17.1 改动点逐文件
+
+#### S3-1 `core/database/EventCodec.kt` —— `decode` 改取 `logicalPosition`（**1 行**）
+
+```kotlin
+// 现状（Step 1 冻结，:258）
+occurredOrder = entity.occurredOrder,
+// 改为
+occurredOrder = entity.logicalPosition,
+```
+
+同时把上方注释从「Step 1 冻结读语义…」改写为：
+
+> **RT-003 Step 3 起**：领域层的 `occurredOrder` 承载**逻辑位置**（= `logicalPosition`），
+> 它才是 ARCHITECTURE §2.3 定义的"游戏内发生顺序"。列 `occurredOrder`（写入序号）自此**只写不读**。
+> 修订不再改变历史长度：同一位置的所有版本共享同一个 `logicalPosition`，只有 `retracted = 0` 的那条参与重放。
+
+> ⚠️ 这一行是**整步的唯一开关**。它一改，`ReplayEngine` 与 `TimelineBuilder` 的行为立刻变化（见 S3-3），因为二者都按领域 `occurredOrder` 过滤与排序。这也是 §16.1-5 那条判据的反向应用：**不要用"DAO 的 `ORDER BY` 改没改"判断读语义变没变。**
+
+#### S3-2 `core/database/dao/MatchEventDao.kt` —— 4 条查询的排序键
+
+| 方法 | 现状 | 改为 |
+|---|---|---|
+| `observeActive`（`:45-49`） | `ORDER BY occurredOrder ASC` | `ORDER BY logicalPosition ASC, revisionSeq ASC` |
+| `listActive`（`:51-55`） | 同上 | 同上 |
+| `listAll`（`:57-58`） | 同上 | 同上（审计视图要按版本序列读） |
+| `listActiveUpTo`（`:60-64`） | `WHERE occurredOrder <= :order` | `WHERE logicalPosition <= :logicalPosition`（**参数改名**，避免调用方误传写入序号） |
+
+**为什么必须改 DAO 的 `ORDER BY`，而不"保持列序 + 靠领域排序兜底"？**（两案选一，选前者）
+
+理由三条，第三条是决定性的：
+
+1. **`listActiveUpTo` 会变成静默错误**：它的 `WHERE` 比较的是列；一旦 `upTo` 的参数含义变成逻辑位置，而列还是写入序号，查询会返回**语义错误的子集**，且不报错。目前 main 里没有调用点，但它是埋在 DAO 里的语义地雷——正是 RT-003 的原病灶（同一字段承担两种语义）。
+2. **DB 顺序与契约相反会误导后续消费者**：未来任何直接读实体列表的代码（分页、导出 SQL、Debug 面板、DBA 手工排查）都会看到"修订排在最后"，与 `MatchBundle.events` 的对外契约矛盾。
+3. **正确性不能依赖内存里那行 `.sortedBy` 永远存在**：`buildBundle:469` 的重排是今天唯一的兜底。把正确性寄托于"某个未来不会有人删掉这行重排"，就是 RT-003 当初发生的方式。**让数据层先给出正确顺序，内存重排退化为幂等的防御。**
+
+保留 `buildBundle:469` 的 `.sortedBy { it.occurredOrder }`（见 S3-4），它是幂等 no-op，成本可忽略。
+
+#### S3-3 `core/replay/ReplayEngine.kt` / `core/replay/TimelineBuilder.kt` —— **不需要改代码，但必须改 KDoc**
+
+**确认：两者零代码改动。** 它们已经写成 `filter { upTo == null || it.occurredOrder <= upTo }`（`ReplayEngine.kt:32`、`TimelineBuilder.kt:45`）与 `sortedWith(compareBy({ it.occurredOrder }, { it.recordedAt }, { it.eventId.raw }))`（`:33` / `:46`）—— 全部走**领域字段**，因此 S3-1 一改，语义自动正确。
+
+**但注释必须同步改**（这不是洁癖）：两处的 `@param upTo 只重放 occurredOrder <= upTo 的事件`（`ReplayEngine.kt:26`、`TimelineBuilder.kt:41`）在切换后会变成**错误描述**。RT-003 的成因就是「注释说 A、实现做 B」；如果这次不改，等于把同一个坑再埋一次。
+
+改写为：
+
+> `@param upTo 逻辑位置上界（`logicalPosition`）。领域事件的 `occurredOrder` 已完成该映射（见 `EventCodec`），因此此处仍以 `occurredOrder` 命名。
+
+#### S3-4 `core/data/RoomMatchRepository.kt` + `core/data/MatchBundle.kt` —— bundle 顺序契约与同位置去重
+
+**`buildBundle`（`:461-469`）改为：**
+
+```kotlin
+val events = eventEntities
+    // 1) 让"同位置多版本"有确定胜负：revisionSeq 大者胜（见 §17.3）
+    .sortedWith(
+        compareBy<MatchEventEntity> { it.logicalPosition }
+            .thenByDescending { it.revisionSeq }
+            .thenBy { it.recordedAt }
+            .thenBy { it.id }
+    )
+    .distinctBy { it.logicalPosition }          // 同位置只保留 revisionSeq 最大的一条
+    // 2) 解码后再按领域顺序兜底一次（幂等；防御未来有人改 decode 或删上面的排序）
+    .map { codec.decode(it) }
+    .sortedBy { it.occurredOrder }
+```
+
+> 注意顺序：**去重必须在 `decode` 之前**（实体上做），因为领域 `MatchEvent` 没有 `revisionSeq` 字段（Step 1 刻意不加，保持 8 个公共字段不变）。去重后再 decode，领域层永远看不到"同位置两条"。
+
+**`MatchBundle.events` 的对外契约**（写进 `MatchBundle` 的 KDoc，并配契约测试）：
+
+1. **不含** `retracted = true` 的事件；
+2. 按 `logicalPosition` **严格升序**，与"写入先后"和 `recordedAt` 无关；
+3. 每个 `logicalPosition` **至多出现一次**（多版本只保留 `revisionSeq` 最大者）；
+4. `events.size` == 该局"有效逻辑位置"数（撤销会留下 dormant 位置，故**不保证**与 `MAX(logicalPosition)` 相等 —— 见 §16.3-d 勘误）；
+5. 元素的 `occurredOrder` **等于**其 `logicalPosition`（对调用方而言它就是"第几个事件"）。
+
+#### S3-5 一次性投影刷新（**必做**；主理人 2026-10-31 确认「升为必做、不是可选」）
+
+**为什么必须有**：`matches.status` 是 RT-004 在**写入时**用当时顺序算好并冻结的列（`recomputeProjectionLocked:449-453`）。切换读路径后，同一局重放会得出**可能不同**的 status。老对局只要不再被写，首页卡（读列）就会永远显示旧结论，而记录页/复盘页（读 replay）显示新结论 —— 两者长期矛盾。
+
+**最小方案（无 schema 变更）**
+
+| 项 | 内容 |
+|---|---|
+| 标记位 | DataStore 新增 `projectionOrderModelVersion: Flow<Int>`（默认 0）+ `suspend fun setProjectionOrderModelVersion(v: Int)` |
+| 触发点 | `AppContainer` 初始化后（应用级 scope 内、非主线程）读取标记；`< 1` 时执行刷新，成功后写 `1` |
+| 刷新实现 | `MatchRepository` 新增 `suspend fun recomputeAllProjections(): Int`：`SELECT id FROM matches` → 逐局复用现有 `recomputeProjectionLocked`（**不要**重写一套重算逻辑）→ 返回处理局数 |
+| 失败处理 | 整体 `runCatching`；失败**不写标记**（下次启动重试），只 `Log.w`，不阻断启动（与 B3 自检同风格） |
+| 幂等性 | `recomputeProjectionLocked` 是纯派生（`bundle → replay → updateStatusOnly`），重复执行结果相同 |
+
+**不采用的替代方案与原因**：① 加 `matches.projectionVersion` 列 → 需要 v5 schema，违反「Step 3 纯代码改动」；② 每次进首页都全量重算 → 列表页每次 O(局数×事件数)，且 `Flow` 里做写操作，不可接受；③ 只在打开详情页时重算 → 修不了首页卡。
+
+#### S3-6 **不需要改**的地方（防止过度改造）
+
+| 位置 | 为什么不用改 |
+|---|---|
+| `core/export/MatchJsonCodec.kt:122`（`occurredOrder = event.occurredOrder`） | 导出取的是领域字段，切换后自动等于逻辑位置 → **导出代码零改动**（详见 §17.4） |
+| `MarkdownExporter.kt:63`（`sortedBy { it.occurredOrder }`） | 同上，且排序键变为逻辑位置，正确 |
+| `importBundle`（`:407`/`:411` 的 `sortedBy`） | 导入时按文件内的逻辑位置排序，经 `encode(...)`（`logicalPosition` 默认 = `occurredOrder`）落库，语义正确 |
+| `core/data/EventRevisionPolicy.kt` | `grep occurredOrder` **零命中**，与顺序无关 |
+| `feature/**` | `RecordViewModel:350-352`、`ReplayViewModel:66/72/112/185`、`ReplayScreen:157` 全部在**领域空间**内自洽（`cutoffOrder`/`requestedOrder`/`at.occurredOrder` 与 bundle events 同源），切换后一起变，不需要适配 |
+| `MatchEventDao` 的写入路径（`appendWithSlot`/`reviseWithSlot`/`nextLogicalPosition`） | Step 1 已正确，勿动 |
+| `AvalonKnowledgeProvider` / `AvalonEvidenceAnalyzer` | 只消费 `MatchEvent`，顺序由调用方保证；`GamePosition.occurredOrder` 语义随之变成逻辑位置，天然一致（RT-005 已合入，需在合并后再跑一次 K01–K10） |
+
+### 17.2 `upTo` 语义定义（写死后不得再变）
+
+**定义式**
+
+```
+activeEvents(upTo) = { e ∈ match.events | e.retracted = false ∧ e.logicalPosition ≤ upTo }
+排序： (logicalPosition ASC, revisionSeq ASC, recordedAt ASC, eventId ASC)
+      —— 因 S3-4 已保证每位置至多一条，该排序等价于 logicalPosition ASC
+```
+
+- **`upTo` = 逻辑位置上界**（不是写入序号）。
+- `upTo = null` = 最新（不过滤）。
+- **`upTo = k` 的含义**：把时间停在"第 k 个逻辑位置"之后。修订**不会**让历史变长，因此 `k` 的语义跨版本稳定。
+
+**三个必测点**（`test/replay/RevisionOrderSemanticsTest.kt`）
+
+| ID | 场景 | 断言 |
+|---|---|---|
+| **U1** | 5 条事件后修订位置 5 | `replay(upTo = 5)` 的结果里**包含**修订后的新版本，且 `state.lastAppliedOrder == 5`；`replay(upTo = 4)` **不含**它（`GamePosition(4).includes(5) == false`） |
+| **U2** | 同上 | `TimelineBuilder.build(events, upTo = null)` 中该修订条目的索引 **== 4**（第 5 位），**不是末尾**；`events.map { occurredOrder } == [1,2,3,4,5]` |
+| **U3** | 修订**前后的同一 `upTo`** | `GamePosition(5)` 指向的事件 id 在修订前后**都是**位置 5 上的有效版本（修订前 = `e-5`，修订后 = `e-5-v2`），**位置值不变**（选点不漂移） |
+| **U4**（附加） | 中间位置修订（`e-3` → `e-3-v2`） | 时间线顺序为 `e-1, e-2, e-3-v2, e-4, e-5`（证明"修订回到原位置"这一可见变化） |
+
+### 17.3 同一位置多版本：胜负规则与确定性
+
+**正常路径**：`listActive` **已经**带 `WHERE retracted = 0`（`MatchEventDao.kt:52`/`:46`），而 `reviseWithSlot` 在同一事务里把旧版本置 `retracted = 1` → **同一位置至多一条 active**，replay 不会重复。
+
+**异常路径（不变量被破坏时）**：B3 自检（`warnOnDuplicateActivePositions`）**只警告不修复**，所以读路径必须有确定行为。规则写死为：
+
+1. 排序键 `(logicalPosition ASC, revisionSeq DESC, recordedAt ASC, id ASC)` 后 `distinctBy { logicalPosition }`；
+2. 即**同位置保留 `revisionSeq` 最大的一条**；若 `revisionSeq` 也相同（理论上不可能），用 `recordedAt` 新的、再退化为 `id` 字典序最小的 —— **同一份数据在任何设备上结果相同**；
+3. 被丢弃的行**不删除、不修改**（§14-② 硬约束：`match_events` 禁 `DELETE`），仍可被审计与导出前的人工排查看到；
+4. debug 构建下额外 `Log.w` 一条（与 B3 自检呼应），release 静默按上述规则处理。
+
+> 这条的意义：读路径的正确性不依赖"自检提醒工程师去修数据"，而是**任何输入都有确定的、可复现的输出**。
+
+### 17.4 导出 JSON v1
+
+**结论：零改动。** 证据链：
+
+- `MatchJsonCodec.kt:122` → `occurredOrder = event.occurredOrder`（领域字段，切换后 = 逻辑位置）；
+- 契约「`occurredOrder` = 事件在时间线上的顺序」**不变**，只是从"曾经错误地写入了写入序号"恢复为"逻辑位置"；
+- 不新增字段（`revisionSeq` 不进 JSON，v1 字段集合不变）；
+- 导入侧 `MatchJsonCodec.kt:391/402/415/431/452/468` 读 DTO 的 `occurredOrder`，经 `encode(...)` 的默认参数得到 `logicalPosition = occurredOrder, revisionSeq = 0` —— 导入即扁平化，语义正确。
+
+> 唯一可观察变化：**修复前导出的 JSON 里，被修订事件的 `occurredOrder` 是写入序号（排在末尾）；修复后是逻辑位置（在原位置）**。这是缺陷修正，不是格式变更，`schemaVersion` 仍为 1。
+
+### 17.5 冻结测试怎么改
+
+**改写 `test/.../data/EventSlotAssignmentTest.kt` 的冻结用例**（名字与期望一起翻）：
+
+| 项 | 现状（Step 1） | Step 3 新期望 |
+|---|---|---|
+| 方法名 | `step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition` | `step3_decodedOccurredOrderFollowsLogicalPosition` |
+| 前提 1 | `slot.occurredOrder == 6` | **不变**（写入序号仍是 6） |
+| 前提 2 | `slot.logicalPosition == 5` | **不变** |
+| 断言 A | 领域 `occurredOrder == slot.occurredOrder`（6） | 翻转 → 领域 `occurredOrder == slot.logicalPosition`（**5**） |
+| 断言 B | 领域 `occurredOrder != slot.logicalPosition` | 翻转 → 领域 `occurredOrder != slot.occurredOrder`（**≠6**） |
+| 断言 C | `!GamePosition(5).includes(occurredOrder)` | 翻转 → `GamePosition(5).includes(occurredOrder)` 为 **true**；再补 `GamePosition(4).includes(...)` 为 **false** |
+| 断言 D | `replay(upTo=6)` 才含它 | 删除（不再有 upTo=6 的意义）；由 C 的两条替代 |
+| 断言 E | `bundle.events.map { occurredOrder } == [1,2,3,4,6]` | 改为 **`[1,2,3,4,5]`** |
+| 断言 F | `bundle.events.map { eventId } == [e-1,e-2,e-3,e-4,e-5-v2]` | **不变**（顺序本来就对，只是序号值变了） |
+
+**新增/调整测试文件**
+
+| 文件 | 内容 |
+|---|---|
+| `test/replay/RevisionOrderSemanticsTest.kt`（**新建**） | U1–U4（§17.2）；这是 Step 3 的核心语义测试，**先写成红再实现** |
+| `test/data/MatchBundleOrderContractTest.kt`（**新建**） | 契约 5 条（§17.1-S3-4）：不含 retracted / 严格升序 / 每位置一条 / size 与 dormant 位置的关系 / `occurredOrder == logicalPosition`；外加"人为插入两条同位置 active（DAO 直调绕过 policy）"验证去重确定性（胜者 = `revisionSeq` 最大） |
+| `test/.../data/EventSlotAssignmentTest.kt`（改） | 见上表 |
+| `test/.../database/DatabaseBackupTest.kt`（**必做，并入同批**） | 改为调用真实 `RoundTraceDatabase.build(...)`（`ApplicationProvider` + 临时库名），闭合 §16.3-b 遗留。**由工程师实施，不属于架构侧交付** |
+
+### 17.6 验收命令、行为对比与回滚
+
+**执行顺序（三步，不得合并成一步跑完再看）**
+
+1. **记基线**：切换前先跑 `--rerun-tasks` 记 N₀（271），并单独跑一次知识/视角用例记输出：
+
+```bash
+export JAVA_HOME="/c/Users/HK-info/android-build/jdk"
+export ANDROID_HOME="/c/Users/HK-info/android-build/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# 1) 基线（切换前，结果存 docs/audit/ 下备查）
+./gradlew :app:testDebugUnitTest --rerun-tasks
+./gradlew :app:testDebugUnitTest --tests "com.roundtrace.app.knowledge.*" --rerun-tasks
+#   预期：0 failed / 0 error；N₀ = 271（K01–K10 全绿）
+```
+
+2. **切换后回归**：
+
+```bash
+./gradlew :app:testDebugUnitTest --rerun-tasks
+#   预期：0 failed / 0 error；用例数 ≥ N₀(271) + 新增（RevisionOrderSemantics 4 + MatchBundleOrderContract ≈5）≈ 280
+./gradlew :app:testDebugUnitTest --tests "com.roundtrace.app.knowledge.*" --rerun-tasks
+#   预期：K01–K10 仍全绿。**若有任何一条由绿转红，必须逐条解释差异并说明是「顺序修复的正当结果」
+#   还是「回归」；不允许直接改期望值让它变绿。**（RT-005 的视角过滤已合入，两者叠加时这一条尤其关键）
+./gradlew :app:lintDebug          # 预期 0 error
+./gradlew :app:assembleDebug      # 预期 BUILD SUCCESSFUL；无 schema 变更 → 4.json 不应有 diff
+git status --short app/schemas    # 预期：无输出（证明本节是纯代码改动）
+```
+
+3. **手工对照 5 个行为**（下表），结论记入 `TEST_REPORT.md`。
+
+**切换前后必须逐一对比的 5 个行为**（建议在真机/模拟器上用手工夹具对局逐条对照，并记入 `TEST_REPORT.md`）
+
+| # | 行为 | 切换前（Step 1 冻结） | 切换后（Step 3） | 判据 |
+|---|---|---|---|---|
+| 1 | **时间线顺序** | 修订条目排在时间线**末尾** | 修订条目回到**原位置** | U2 / U4 |
+| 2 | **复盘选点** | `GamePosition(k)` 的数值含义随修订漂移（修订让尾部长度+1） | `k` 恒指"第 k 个逻辑位置"，修订不改变历史长度 | U3 |
+| 3 | **状态派生** | 用旧顺序算（可能把修订当非法事件拒绝） | 用新顺序算（修订在原位置生效）；老对局由 S3-5 一次性刷新后与首页一致 | B4（`AvalonReducerReplayTest`）+ 手工：首页卡 status == 详情页派生 status |
+| 4 | **导出** | 用户导出的 JSON 里修订事件 `occurredOrder` 是写入序号 | 同一字段变为逻辑位置（值变化、语义正确、字段集合不变） | D02（`JsonCodecTest` 往返）+ 手工对比前后两份 JSON |
+| 5 | **上帝视角 / 视角隔离** | `KnowledgeProvider` 按旧顺序构建历史 | 按新顺序构建；`canOpenGodView`、`occurredOrder <= at` 边界需重新验证不泄漏未来事件 | K01–K10 全绿**且与切换前基线逐条一致**（RT-005 已合入，见 §17.0-P6）+ 手工：第 2 轮当时视角不含第 3 轮事件 |
+
+**回滚**：`git revert <commit>` 单提交即可。
+
+- 本节**无 schema 变更**（`4.json` 无 diff 可验证），DB 版本仍为 4，回滚后数据完好；
+- 唯一副作用：`projectionOrderModelVersion` 标记位被写成 1 后，回滚版本不会再跑刷新 —— 由于刷新是幂等的派生计算，且旧版本的 `recomputeProjectionLocked` 本来就会在下次写入时覆盖，**无残留损害**；
+- 回滚后需把 `step3_` 冻结用例改回 `step1_`（或直接 revert 整个提交，两者都在同一 commit 内，一并回退）。
+
+### 17.7 本节已定型的 3 个取舍（不留可选）
+
+| ID | 取舍 | 选定 | 理由 |
+|---|---|---|---|
+| D1 | DAO 排序键：改 `ORDER BY` 还是保持列序 | **改**为 `logicalPosition, revisionSeq` | 见 §17.1-S3-2 三条理由；核心是"不能让正确性依赖内存里那行 `sortedBy` 永远存在" |
+| D2 | 同位置多版本：读路径去重还是交给自检 | **读路径去重**（`revisionSeq` 最大者胜） | B3 只警告不修复；读路径必须有确定输出，不能靠"数据恰好正确" |
+| D3 | 老对局 status：接受不一致窗口还是刷一次 | **一次性刷新**（DataStore 标记，无 schema 变更） | 首页卡读列、详情页读 replay，不刷就会长期矛盾；另两个替代方案分别破坏"纯代码改动"与性能 |
+
+### 17.8 风险
+
+| ID | 风险 | 等级 | 缓解 |
+|---|---|---|---|
+| R1 | ~~切换与 RT-005（视角过滤）叠加~~ **已解除**：RT-005 早在 `017b98e` + `73ffc84` 合入，QA 用 16 条对抗测试验过（245 用例），Step 3 **不需要再等 RT-005** | — | 但"先记 K01–K10 基线、切换后逐条解释差异"的要求**保留**（§17.6 执行顺序第 1/2 步）。视角过滤与顺序切换虽不再同时发生，`ReplayEngine` 的输入集合已变，K01–K10 仍是本次最敏感的一组 |
+| R2 | S3-5 的一次性刷新在大会话量下变慢（N 局 × 全量 replay） | 低 | 单机对局数通常是几十；刷新在应用级 scope 后台执行，失败不阻断、下次重试 |
+| R3 | `listActiveUpTo` 改名后若仍有隐藏调用点（反射/未来代码） | 低 | 当前 `grep` 无调用点；改参数名会让误用变成编译错误 |
+| R4 | 导出值变化被用户当成"导出格式变了" | 中 | `TEST_REPORT` 与 README 的已知问题里写明：修订事件的 `occurredOrder` 语义修正，`schemaVersion` 未变 |
+| R5 | 只发 Step 1 不发 Step 3（半截发版） | **高** | 见本节开头「发版铁律」：`4.json` 与 `decode` 切换必须在同一 versionCode；半截发版 = 承担全部 schema 风险却零收益 |
+
+---
+
 ## 附录 A：改动文件清单（给工程师的执行 checklist）
 
 > **Step 1（加列 + 迁移 + 双写）的权威清单是 §15.2 / §15.3**（含逐字 SQL、注解字符串与方法签名）。
-> 本附录是 **Step 1–4 全线**的汇总视图，冲突时以 §15 为准。
+> **Step 3（切换读路径）的权威清单是 §17.1 / §17.5**（含 `upTo` 定义式、去重胜负规则、冻结用例改写）。
+> 本附录是 **Step 1–4 全线**的汇总视图，冲突时以 §15 / §17 为准。
 
 | # | 文件 | 改动 | Phase |
 |---|---|---|---|
@@ -1294,12 +1797,12 @@ feat(db): RT-003 Step 1 —— logicalPosition/revisionSeq 加列、v4 迁移与
 | 2 | `core/database/RoundTraceDatabase.kt` | `version 3→4`、`MIGRATION_3_4`、加入 `addMigrations` | 1 |
 | 3 | `app/build.gradle.kts` | `sourceSets` 把 `schemas/` 加进 test / androidTest assets | 1 |
 | 4 | `app/schemas/.../4.json` | 构建生成后提交 | 1 |
-| 5 | `core/database/EventCodec.kt` | 写：`encode` +2 默认参数；读：`decode` 的 `base.occurredOrder` 改取 `logicalPosition` | 2 |
+| 5 | `core/database/EventCodec.kt` | 写：`encode` +2 默认参数；读：`decode` 的 `base.occurredOrder` **保持取列 `occurredOrder`**（Step 1 冻结，`7fd8758`）；切 `logicalPosition` 属 **Step 3** | 2（写）/ 3（读） |
 | 6 | `core/database/dao/MatchEventDao.kt` | 写：`EventSlot`/`RevisionSeed`/`nextLogicalPosition`/`findRevisionSeed`/`appendWithSlot`/`reviseWithSlot`；读：3 条 `ORDER BY` + 1 条 `WHERE`（**读属 Step 3**） | 2（写）/ 3（读） |
 | 7 | `core/data/RoomMatchRepository.kt` | `appendEvent`（2 处）/ `reviseEvent`（1 处）调用点 | 2 |
 | 8 | `core/replay/ReplayEngine.kt` | **仅 KDoc**（`upTo` 语义） | 4 |
 | 9 | `core/replay/TimelineBuilder.kt` | **仅 KDoc** | 4 |
-| 10 | `test/.../database/MigrationV3ToV4Test.kt` | 新建（T1-a…T1-g） | 1 |
+| 10 | `androidTest/.../database/MigrationV3ToV4Test.kt` | 新建（T1-a…T1-g；**落在 androidTest，本机无设备时不执行**，见 §16.3-b） | 1 |
 | 11 | `test/.../database/MigrationBackfillManualTest.kt` | 新建（T2，手工 v3 夹具） | 1 |
 | 12 | `test/.../database/DatabaseBackupTest.kt` | 新建（T3，备份可读） | 1 |
 | 13 | `test/.../replay/RevisionOrderSemanticsTest.kt` | 新建（B1，Phase 0 先写红） | 0 |
