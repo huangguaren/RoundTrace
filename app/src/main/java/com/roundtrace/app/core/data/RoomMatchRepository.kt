@@ -31,6 +31,7 @@ import com.roundtrace.app.core.util.IdGenerator
 import java.time.Clock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CancellationException
 
@@ -89,18 +90,21 @@ class RoomMatchRepository(
         matchDao.observeSummaries(filter.statuses())
             .map { rows -> rows.map(Mapping::toSummary) }
 
-    override fun observeBundle(matchId: MatchId): Flow<MatchBundle?> = combine(
-        matchDao.observeById(matchId.raw),
-        participantDao.observeByMatch(matchId.raw),
-        roleDao.observeByMatch(matchId.raw),
-        eventDao.observeActive(matchId.raw)
-    ) { matchEntity, participants, roles, eventEntities ->
-        if (matchEntity == null) {
-            null
-        } else {
-            buildBundle(matchEntity, participants, roles, eventEntities)
-        }
-    }
+    override fun observeBundle(matchId: MatchId): Flow<MatchBundle?> =
+        // NX-02：四路 Flow combine，Room WAL 下读一致；
+        // distinctUntilChanged 减少中间态重复重放
+        combine(
+            matchDao.observeById(matchId.raw),
+            participantDao.observeByMatch(matchId.raw),
+            roleDao.observeByMatch(matchId.raw),
+            eventDao.observeActive(matchId.raw)
+        ) { matchEntity, participants, roles, eventEntities ->
+            if (matchEntity == null) {
+                null
+            } else {
+                buildBundle(matchEntity, participants, roles, eventEntities)
+            }
+        }.distinctUntilChanged()
 
     override suspend fun getBundle(matchId: MatchId): MatchBundle? {
         // NX-02：四表读收进同一事务，避免撕裂读
