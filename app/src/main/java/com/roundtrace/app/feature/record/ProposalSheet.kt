@@ -40,6 +40,8 @@ fun ProposalSheet(
     leaderSeat: Int?,
     teamSeats: Set<Int>,
     canSubmit: Boolean,
+    isSaving: Boolean = false,
+    isEditing: Boolean = false,
     seatLabels: Map<Int, String?> = emptyMap(),
     seatAvatars: Map<Int, String?> = emptyMap(),
     onSelectLeader: (Int?) -> Unit,
@@ -60,7 +62,8 @@ fun ProposalSheet(
             verticalArrangement = Arrangement.spacedBy(Dimens.Spacing16)
         ) {
             Text(
-                text = stringResource(R.string.proposal_sheet_title, questNo),
+                text = (if (isEditing) stringResource(R.string.record_mode_edit) + " · " else "") +
+                    stringResource(R.string.proposal_sheet_title, questNo),
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -129,7 +132,7 @@ fun ProposalSheet(
                 }
                 Button(
                     onClick = onSubmit,
-                    enabled = canSubmit,
+                    enabled = canSubmit && !isSaving,
                     shape = ButtonShape,
                     modifier = Modifier
                         .weight(1f)

@@ -5,6 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.roundtrace.app.core.data.MatchBundle
 import com.roundtrace.app.core.data.MatchRepository
 import com.roundtrace.app.core.model.EventFactory
+import com.roundtrace.app.core.model.EventId
+import com.roundtrace.app.core.model.EventType
+import com.roundtrace.app.core.model.MissionResolved
+import com.roundtrace.app.core.model.TeamProposed
+import com.roundtrace.app.core.model.TeamVoteRecorded
+import kotlinx.coroutines.CancellationException
 import com.roundtrace.app.core.model.MatchEvent
 import com.roundtrace.app.core.model.MatchId
 import com.roundtrace.app.core.model.MissionOutcome
@@ -62,6 +68,15 @@ class RecordViewModel(
     private val saveStatusFlow = MutableStateFlow(SaveStatus.SAVED)
     private val undoFeedbackFlow = MutableStateFlow<UndoFeedback?>(null)
 
+    /** 当前编辑会话；`null` = 新增模式（C-2）。 */
+    private val editSessionFlow = MutableStateFlow<EditSession?>(null)
+
+    /** 最近一次提交结果；UI 消费后清空。 */
+    private val commitResultFlow = MutableStateFlow<RecordCommitResult?>(null)
+
+    /** 恢复编辑草稿时发现目标已失效。 */
+    private val editInvalidatedFlow = MutableStateFlow(false)
+
     private var draftSaveJob: Job? = null
 
     /**
@@ -80,13 +95,20 @@ class RecordViewModel(
             repository.observeBundle(matchId),
             draftFlow,
             saveStatusFlow,
-            undoFeedbackFlow
-        ) { bundle, draft, saveStatus, undoFeedback ->
+            undoFeedbackFlow,
+            editSessionFlow,
+            commitResultFlow,
+            editInvalidatedFlow
+        ) { values ->
+            @Suppress("UNCHECKED_CAST")
             buildUiState(
-                bundle = bundle,
-                draft = draft,
-                saveStatus = saveStatus,
-                undoFeedback = undoFeedback
+                bundle = values[0] as MatchBundle?,
+                draft = values[1] as ProposalDraft,
+                saveStatus = values[2] as SaveStatus,
+                undoFeedback = values[3] as UndoFeedback?,
+                editSession = values[4] as EditSession?,
+                commitResult = values[5] as RecordCommitResult?,
+                editTargetInvalidated = values[6] as Boolean
             )
         }
             .catch { throwable ->
@@ -107,6 +129,8 @@ class RecordViewModel(
     init {
         // RT-006：页面重建（进程被杀 / 切后台被回收 / 旋屏）后把草稿捡回来
         restoreDraft()
+        // C-2：编辑草稿单独恢复，并且**先核实目标事件仍然有效**
+        restoreEditDraft()
     }
 
     // ————————————————————————————————————————————————————————
@@ -142,6 +166,9 @@ class RecordViewModel(
             // 用户已经在异步窗口内动过手 → 以用户输入为准。
             // 注意判据是「标记」而不是「草稿是否为空」：用户可能已经输入又清空。
             if (draftTouchedByUser) return@launch
+
+            // 两条恢复是并发跑的：编辑草稿更「具体」，已经进入编辑态时不能让新增草稿覆盖它
+            if (editSessionFlow.value != null) return@launch
 
             draftFlow.value = restored
         }
@@ -201,6 +228,12 @@ class RecordViewModel(
             is RecordAction.RollbackToQuest -> rollbackToQuest(action.questNo)
 
             RecordAction.ClearUndoFeedback -> undoFeedbackFlow.value = null
+
+            is RecordAction.OpenEdit -> openEdit(action.eventId)
+
+            RecordAction.CancelEdit -> cancelEdit()
+
+            RecordAction.AcknowledgeCommit -> commitResultFlow.value = null
         }
     }
 
@@ -223,10 +256,13 @@ class RecordViewModel(
     }
 
     private fun persistDraftNow() {
-        val json = ProposalDraftCodec.encode(draftFlow.value)
+        val draft = draftFlow.value
+        val json = ProposalDraftCodec.encode(draft)
+        // 编辑草稿与新增草稿分开落库（见 DRAFT_KEY_EDIT 的说明）
+        val key = if (draft.editTargetEventId != null) DRAFT_KEY_EDIT else DRAFT_KEY
         viewModelScope.launch {
             saveStatusFlow.value = SaveStatus.SAVING
-            val result = runCatching { repository.saveDraft(matchId, DRAFT_KEY, json) }
+            val result = runCatchingCancellable { repository.saveDraft(matchId, key, json) }
             saveStatusFlow.value = if (result.isSuccess) SaveStatus.SAVED else SaveStatus.FAILED
         }
     }
@@ -243,65 +279,71 @@ class RecordViewModel(
         val quest = state.quest ?: return
         if (quest.questStarted) return
         val leader = state.draft.leaderSeat ?: quest.currentLeaderSeat ?: quest.leaderSeat ?: 1
-        append(eventFactory.questStarted(questNo = quest.questNo, leaderSeat = leader))
+        commit(eventFactory.questStarted(questNo = quest.questNo, leaderSeat = leader), null)
     }
 
     private fun confirmProposal() {
         val state = uiState.value
-        val quest = state.quest ?: return
         val leader = state.draft.leaderSeat ?: return
         val team = state.draft.teamSeats.sorted()
         if (team.isEmpty()) return
-        val proposalNo = quest.nextProposalNo
-        viewModelScope.launch {
-            // 编辑模式：撤回该提案的旧 TeamProposed
-            val bundle = repository.getBundle(matchId)
-            if (bundle != null) {
-                bundle.events.filter {
-                    it is com.roundtrace.app.core.model.TeamProposed &&
-                        it.questNo == quest.questNo &&
-                        it.proposalNo == proposalNo &&
-                        !it.retracted
-                }.forEach { old -> runCatching { repository.retractEvent(matchId, old.eventId) } }
-            }
-            val event = eventFactory.teamProposed(
-                questNo = quest.questNo,
+
+        // 编辑态：轮次与提案号取自**被编辑的事件**，不是当前轮
+        val edit = state.editSession?.takeIf { it.eventType == EventType.TEAM_PROPOSED }
+        val questNo: Int
+        val proposalNo: Int
+        if (edit != null) {
+            questNo = edit.questNo
+            proposalNo = edit.proposalNo ?: return
+        } else {
+            val quest = state.quest ?: return
+            questNo = quest.questNo
+            proposalNo = quest.nextProposalNo
+        }
+
+        commit(
+            event = eventFactory.teamProposed(
+                questNo = questNo,
                 proposalNo = proposalNo,
                 leaderSeat = leader,
                 teamSeats = team
-            )
-            append(event)
-        }
+            ),
+            editTargetEventId = edit?.targetEventId
+        )
     }
 
     private fun saveVotes() {
         val state = uiState.value
-        val quest = state.quest ?: return
         val draft = state.draft
         if (!draft.hasVoteData) return
-        val proposalNo = quest.nextProposalNo - 1
-        viewModelScope.launch {
-            // 编辑模式：撤回该提案的旧投票记录
-            val bundle = repository.getBundle(matchId)
-            if (bundle != null) {
-                bundle.events.filter {
-                    it is com.roundtrace.app.core.model.TeamVoteRecorded &&
-                        it.questNo == quest.questNo &&
-                        it.proposalNo == proposalNo &&
-                        !it.retracted
-                }.forEach { old -> runCatching { repository.retractEvent(matchId, old.eventId) } }
-            }
-            val event = eventFactory.teamVoteRecorded(
-                questNo = quest.questNo,
+
+        val edit = state.editSession?.takeIf { it.eventType == EventType.TEAM_VOTE_RECORDED }
+        val questNo: Int
+        val proposalNo: Int
+        if (edit != null) {
+            questNo = edit.questNo
+            proposalNo = edit.proposalNo ?: return
+        } else {
+            val quest = state.quest ?: return
+            questNo = quest.questNo
+            proposalNo = quest.nextProposalNo - 1
+        }
+
+        // 注意：改票**不碰**同轮的 TeamProposalResolved。
+        // 若新票数与既有决议矛盾，交给 reducer 的 DECISION_VOTE_CONFLICT 浮出来 + UI 提示复核，
+        // 而不是静默改写现场事实（主理人 C-2 裁决）。
+        commit(
+            event = eventFactory.teamVoteRecorded(
+                questNo = questNo,
                 proposalNo = proposalNo,
                 playerCountAtVote = state.playerCount,
                 votesBySeat = draft.votesBySeat.ifEmpty { null },
                 approveCount = draft.approveCount,
                 rejectCount = draft.rejectCount,
                 unknownVoteCount = draft.unknownVoteCount(state.playerCount)
-            )
-            append(event)
-        }
+            ),
+            editTargetEventId = edit?.targetEventId
+        )
     }
 
     private fun confirmVoteDecision(decision: ProposalDecision) {
@@ -320,34 +362,36 @@ class RecordViewModel(
                 ?: draft.votesBySeat.values.count { it == TeamVoteChoice.REJECT }
                     .takeIf { draft.votesBySeat.isNotEmpty() }
         )
-        append(event)
+        // 决议事件（TEAM_PROPOSAL_RESOLVED）**不可编辑**，只能新增；要改走「撤销再重录」
+        commit(event, null)
     }
 
     private fun saveMission() {
         val state = uiState.value
-        val quest = state.quest ?: return
         val draft = state.draft
-        val team = draft.teamSeats.takeIf { it.isNotEmpty() }?.sorted()
-        viewModelScope.launch {
-            // 编辑模式：如果当前任务已有 MISSION_RESOLVED 事件，先撤回
-            val bundle = repository.getBundle(matchId)
-            if (bundle != null) {
-                val existing = bundle.events.filter {
-                    it is com.roundtrace.app.core.model.MissionResolved && it.questNo == quest.questNo && !it.retracted
-                }
-                existing.forEach { old ->
-                    runCatching { repository.retractEvent(matchId, old.eventId) }
-                }
-            }
-            val event = eventFactory.missionResolved(
-                questNo = quest.questNo,
-                teamSizeExpected = quest.expectedTeamSize,
-                teamSeats = team,
+
+        val edit = state.editSession?.takeIf { it.eventType == EventType.MISSION_RESOLVED }
+        val questNo: Int
+        val expectedTeamSize: Int
+        if (edit != null) {
+            questNo = edit.questNo
+            expectedTeamSize = rules.expectedTeamSizeFor(state.playerCount, questNo)
+        } else {
+            val quest = state.quest ?: return
+            questNo = quest.questNo
+            expectedTeamSize = quest.expectedTeamSize
+        }
+
+        commit(
+            event = eventFactory.missionResolved(
+                questNo = questNo,
+                teamSizeExpected = expectedTeamSize,
+                teamSeats = draft.teamSeats.takeIf { it.isNotEmpty() }?.sorted(),
                 failCount = draft.failCount,
                 observedOutcome = draft.observedOutcome
-            )
-            append(event)
-        }
+            ),
+            editTargetEventId = edit?.targetEventId
+        )
     }
 
     /**
@@ -411,22 +455,196 @@ class RecordViewModel(
         }
     }
 
-    private fun append(event: MatchEvent) {
+    /**
+     * 提交一次写入：**编辑态走 `reviseEvent`，新增走 `appendEvent`**（C-2）。
+     *
+     * 三条硬约束：
+     * 1. **保存中不再接受新的提交**（防重复提交的第一道闸；仓储侧还有并发保护做最终防线）；
+     * 2. 失败时**保留用户输入与旧的有效事件**，只把 `SaveStatus` 置 FAILED 并给出重试入口 ——
+     *    绝不假装已保存，也绝不静默丢弃输入；
+     * 3. 成功后才清草稿、退出编辑态、发 `Succeeded`（UI 据此关弹窗）。
+     */
+    private fun commit(event: MatchEvent, editTargetEventId: EventId?) {
+        if (saveStatusFlow.value == SaveStatus.SAVING) return
         viewModelScope.launch {
             saveStatusFlow.value = SaveStatus.SAVING
-            val result = runCatching { repository.appendEvent(matchId, event) }
-            saveStatusFlow.value = when {
-                result.isFailure -> SaveStatus.FAILED
-                result.getOrNull()?.isSuccess != true -> SaveStatus.FAILED
-                else -> SaveStatus.SAVED
+            val result = runCatchingCancellable {
+                if (editTargetEventId != null) {
+                    repository.reviseEvent(matchId, editTargetEventId, event)
+                } else {
+                    repository.appendEvent(matchId, event)
+                }
             }
-            if (result.isSuccess && result.getOrNull()?.isSuccess == true) {
-                // 事件已落库 → 清空本轮表单内容
-                // 如果是任务开始事件，不保留队长，新任务重新选队长
-                val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
-                draftFlow.value = ProposalDraft(leaderSeat = if (keepLeader) draftFlow.value.leaderSeat else null)
-                runCatching { repository.clearDraft(matchId, DRAFT_KEY) }
+            val appendResult = result.getOrNull()
+            val success = result.isSuccess && appendResult?.isSuccess == true
+
+            if (!success) {
+                saveStatusFlow.value = SaveStatus.FAILED
+                commitResultFlow.value = RecordCommitResult.Failed(
+                    reason = appendResult?.error?.name ?: "WRITE_FAILED"
+                )
+                return@launch
             }
+
+            saveStatusFlow.value = SaveStatus.SAVED
+            editSessionFlow.value = null
+            editInvalidatedFlow.value = false
+
+            // 事件已落库 → 清空本轮表单内容；任务开始事件不保留队长（新任务重选）
+            val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
+            draftFlow.value = ProposalDraft(
+                leaderSeat = if (keepLeader) draftFlow.value.leaderSeat else null
+            )
+            draftTouchedByUser = false
+            runCatching { repository.clearDraft(matchId, DRAFT_KEY) }
+            runCatching { repository.clearDraft(matchId, DRAFT_KEY_EDIT) }
+            commitResultFlow.value = RecordCommitResult.Succeeded
+        }
+    }
+
+    /**
+     * `runCatching` 的**可取消版本**。
+     *
+     * 标准 `runCatching` 会把 `CancellationException` 当成普通失败吞掉，
+     * 于是「页面被销毁 → 协程取消」会被误报成「保存失败」，用户看到一条假错误。
+     * 这里显式重抛取消异常，保证取消能正常传播。
+     */
+    private suspend fun <T> runCatchingCancellable(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (throwable: Throwable) {
+        Result.failure(throwable)
+    }
+
+    // ————————————————————————————————————————————————————————
+    // 编辑会话（C-2）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 按 `eventId` 打开编辑态并**预填原值**。
+     *
+     * 不用「事件类型 + 当前轮」定位：那样编辑历史轮次时必然写到当前轮。
+     */
+    private fun openEdit(eventId: EventId) {
+        viewModelScope.launch {
+            val bundle = repository.getBundle(matchId)
+            val target = bundle?.events?.firstOrNull { it.eventId == eventId && !it.retracted }
+
+            // 目标不存在 / 已失效 / 类型不可编辑 → 不进编辑态，由 UI 提示「请重新加载」
+            if (target == null || target.type !in EDITABLE_EVENT_TYPES) {
+                editSessionFlow.value = null
+                editInvalidatedFlow.value = true
+                return@launch
+            }
+
+            val questNo = target.questNo ?: run {
+                editInvalidatedFlow.value = true
+                return@launch
+            }
+            editSessionFlow.value = EditSession(
+                targetEventId = target.eventId,
+                eventType = target.type,
+                questNo = questNo,
+                proposalNo = proposalNoOf(target)
+            )
+            draftFlow.value = prefillFrom(target)
+            // 预填不算「用户输入」：随后若恢复编辑草稿，仍允许覆盖
+            draftTouchedByUser = false
+            editInvalidatedFlow.value = false
+        }
+    }
+
+    /**
+     * 取事件的提案号。
+     *
+     * `MatchEvent` 基接口只有 `questNo`，`proposalNo` 只存在于部分子类型上，
+     * 所以必须按类型取而不是直接访问。
+     */
+    private fun proposalNoOf(event: MatchEvent): Int? = when (event) {
+        is TeamProposed -> event.proposalNo
+        is TeamVoteRecorded -> event.proposalNo
+        is com.roundtrace.app.core.model.TeamProposalResolved -> event.proposalNo
+        is com.roundtrace.app.core.model.PlayerClaimed -> event.proposalNo
+        else -> null
+    }
+
+    /** 原事件 → 预填草稿。三类可编辑事件各有自己的字段。 */
+    private fun prefillFrom(event: MatchEvent): ProposalDraft = when (event) {
+        is TeamProposed -> ProposalDraft(
+            leaderSeat = event.leaderSeat,
+            teamSeats = event.teamSeats.toSet(),
+            editTargetEventId = event.eventId
+        )
+
+        is TeamVoteRecorded -> ProposalDraft(
+            votesBySeat = event.votesBySeat ?: emptyMap(),
+            approveCount = event.approveCount,
+            rejectCount = event.rejectCount,
+            editTargetEventId = event.eventId
+        )
+
+        is MissionResolved -> ProposalDraft(
+            teamSeats = event.teamSeats?.toSet() ?: emptySet(),
+            failCount = event.failCount,
+            observedOutcome = event.observedOutcome,
+            editTargetEventId = event.eventId
+        )
+
+        else -> ProposalDraft()
+    }
+
+    /** 退出编辑态，丢弃编辑草稿。**不写库**。 */
+    private fun cancelEdit() {
+        editSessionFlow.value = null
+        editInvalidatedFlow.value = false
+        draftFlow.value = ProposalDraft()
+        draftTouchedByUser = false
+        viewModelScope.launch {
+            runCatchingCancellable { repository.clearDraft(matchId, DRAFT_KEY_EDIT) }
+        }
+    }
+
+    /**
+     * 恢复**编辑草稿**（与新增草稿分开的 screenKey）。
+     *
+     * 恢复前必须**核实目标事件仍然有效**：
+     * 目标已被撤销/删除时，保留用户输入但**不进入编辑态**，并置 `editTargetInvalidated`
+     * 让 UI 提示「原记录已变更，请重新加载」——不静默丢弃用户刚录入的内容。
+     */
+    private fun restoreEditDraft() {
+        viewModelScope.launch {
+            val json = runCatchingCancellable {
+                repository.loadDraft(matchId, DRAFT_KEY_EDIT)
+            }.getOrNull() ?: return@launch
+
+            val draft = runCatchingCancellable { ProposalDraftCodec.decode(json) }.getOrNull()
+                ?: return@launch
+            val targetEventId = draft.editTargetEventId ?: return@launch
+
+            val bundle = runCatchingCancellable { repository.getBundle(matchId) }.getOrNull()
+            val target = bundle?.events?.firstOrNull {
+                it.eventId == targetEventId && !it.retracted
+            }
+
+            // 用户已经在异步窗口内动过手 → 以用户输入为准（与 RT-006 同一原则）
+            if (draftTouchedByUser) return@launch
+
+            draftFlow.value = draft
+            if (target == null || target.type !in EDITABLE_EVENT_TYPES) {
+                editSessionFlow.value = null
+                editInvalidatedFlow.value = true
+                return@launch
+            }
+
+            val questNo = target.questNo ?: return@launch
+            editSessionFlow.value = EditSession(
+                targetEventId = target.eventId,
+                eventType = target.type,
+                questNo = questNo,
+                proposalNo = proposalNoOf(target)
+            )
+            editInvalidatedFlow.value = false
         }
     }
 
@@ -438,7 +656,10 @@ class RecordViewModel(
         bundle: MatchBundle?,
         draft: ProposalDraft,
         saveStatus: SaveStatus,
-        undoFeedback: UndoFeedback?
+        undoFeedback: UndoFeedback?,
+        editSession: EditSession? = null,
+        commitResult: RecordCommitResult? = null,
+        editTargetInvalidated: Boolean = false
     ): RecordUiState {
         if (bundle == null) {
             return RecordUiState(isLoading = false, errorMessage = "对局不存在或已被删除")
@@ -483,10 +704,22 @@ class RecordViewModel(
         )
 
         // 草稿层校验（不阻断，只提示）+ 重放层问题
+        //
+        // C-2：编辑态下「队伍人数/门槛」必须按**被编辑的轮次**算。
+        // 否则编辑第 1 轮（如 5 人局 2 人队伍）却用当前第 3 轮（3 人队伍）的规则校验，
+        // 会凭空报一条「人数不符」，用户也永远点不亮提交按钮。
+        val sheetQuestNo = editSession?.questNo ?: activeQuestNo
+        val sheetExpectedTeamSize = rules.expectedTeamSizeFor(playerCount, sheetQuestNo)
+        val sheetFailThreshold = if (playerCount in AvalonPreset.MIN_PLAYERS..AvalonPreset.MAX_PLAYERS) {
+            rules.failThreshold(playerCount, sheetQuestNo)
+        } else {
+            1
+        }
+
         val draftIssues: List<RuleIssue> = rules.validateTeamDraft(
             teamSeats = draft.teamSeats.sorted(),
             playerCount = playerCount,
-            questNo = activeQuestNo
+            questNo = sheetQuestNo
         )
 
         val issues = (draftIssues + gameState.issues + reduced.issues)
@@ -508,7 +741,7 @@ class RecordViewModel(
         val voteExceedsPlayers = (approveForDecision ?: 0) + (rejectForDecision ?: 0) > playerCount
 
         val missionDerivedOutcome: MissionOutcome? = draft.failCount?.let { failCount ->
-            if (rules.isMissionFailed(failCount, playerCount, activeQuestNo)) {
+            if (rules.isMissionFailed(failCount, playerCount, sheetQuestNo)) {
                 MissionOutcome.FAILED
             } else {
                 MissionOutcome.SUCCESS
@@ -549,6 +782,12 @@ class RecordViewModel(
             voteExceedsPlayers = voteExceedsPlayers,
             missionDerivedOutcome = missionDerivedOutcome,
             undoFeedback = undoFeedback,
+            editSession = editSession,
+            sheetQuestNo = sheetQuestNo,
+            sheetExpectedTeamSize = sheetExpectedTeamSize,
+            sheetFailThreshold = sheetFailThreshold,
+            commitResult = commitResult,
+            editTargetInvalidated = editTargetInvalidated,
             errorMessage = null
         )
     }
@@ -559,6 +798,14 @@ class RecordViewModel(
 
         /** `match_drafts.screenKey`：提案录入。 */
         const val DRAFT_KEY: String = "RECORD_PROPOSAL"
+
+        /**
+         * 编辑草稿的 screenKey。
+         *
+         * **必须与新增草稿分开**：否则「编辑第一轮时的输入」会被当成「当前轮的草稿」恢复出来，
+         * 用户一进页面就看到一份属于别的轮次的队伍。
+         */
+        const val DRAFT_KEY_EDIT: String = "RECORD_EDIT"
     }
 }
 
@@ -600,6 +847,13 @@ internal object ProposalDraftCodec {
             } else {
                 put("observedOutcome", JsonPrimitive(observed.name))
             }
+            // C-2：编辑草稿需要记住「改的是哪条事件」
+            val editTarget = draft.editTargetEventId
+            if (editTarget == null) {
+                put("editTargetEventId", JsonNull)
+            } else {
+                put("editTargetEventId", JsonPrimitive(editTarget.raw))
+            }
         }
         return obj.toString()
     }
@@ -636,7 +890,12 @@ internal object ProposalDraftCodec {
             failCount = obj.intOrNull("failCount"),
             observedOutcome = (obj["observedOutcome"] as? JsonPrimitive)
                 ?.contentOrNull
-                ?.let { rawOutcome -> MissionOutcome.entries.firstOrNull { it.name == rawOutcome } }
+                ?.let { rawOutcome -> MissionOutcome.entries.firstOrNull { it.name == rawOutcome } },
+            // 缺失或 null → 新增草稿；未知键仍被忽略（A-2 的兼容性由 ignoreUnknownKeys 保证）
+            editTargetEventId = (obj["editTargetEventId"] as? JsonPrimitive)
+                ?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?.let { com.roundtrace.app.core.model.EventId(it) }
         )
     }
 

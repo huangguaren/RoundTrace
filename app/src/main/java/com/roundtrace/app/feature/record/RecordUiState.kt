@@ -1,5 +1,6 @@
 package com.roundtrace.app.feature.record
 
+import com.roundtrace.app.core.model.EventType
 import com.roundtrace.app.core.model.MatchStatus
 import com.roundtrace.app.core.model.MatchSummary
 import com.roundtrace.app.core.model.MissionOutcome
@@ -27,7 +28,14 @@ data class ProposalDraft(
     /** 任务失败牌数：null = 未知，0 = 已知零失败牌 */
     val failCount: Int? = null,
     /** 用户直接观察到的任务成败 */
-    val observedOutcome: MissionOutcome? = null
+    val observedOutcome: MissionOutcome? = null,
+    /**
+     * 编辑会话的目标事件 id（RT-003 C-2）。
+     *
+     * `null` = 新增草稿；非空 = 编辑草稿。两者**分开持久化**（不同 screenKey），
+     * 避免「编辑第一轮时的输入」被当成「当前轮的草稿」恢复出来。
+     */
+    val editTargetEventId: com.roundtrace.app.core.model.EventId? = null
 ) {
 
     /** 未逐人记录且未填汇总时，票数全为未知。 */
@@ -92,6 +100,54 @@ data class ProposalUiModel(
 )
 
 /**
+ * 可编辑的事件类型**白名单**（主理人 2026-11-02 裁决：3 类）。
+ *
+ * | 事件 | 可编辑 | 理由 |
+ * |---|---|---|
+ * | `TEAM_PROPOSED` | ✅ | 组队提案，队伍成员录错是高频场景 |
+ * | `TEAM_VOTE_RECORDED` | ✅ | 组队投票，票数录错 |
+ * | `MISSION_RESOLVED` | ✅ | 任务结果（失败牌数 / 观察结果） |
+ * | `TEAM_PROPOSAL_RESOLVED` | ❌ | 它是**现场通过/否决的既成事实**，允许直接改会让
+ * 「改票数导致决议矛盾」与「直接改决议」两条路径打架；要改走显式「撤销再重录」 |
+ * | `QUEST_STARTED` / `PLAYER_CLAIMED` / `PRIVATE_NOTE_ADDED` | ❌ | 轮次锚点 / 语义事实 / 私人内容 |
+ *
+ * 白名单放在状态层而不是散在 UI：**编辑入口的唯一判据**只能有一处，
+ * 否则「时间线能点开、但保存时报类型不支持」这类不一致迟早出现。
+ */
+val EDITABLE_EVENT_TYPES: Set<EventType> = setOf(
+    EventType.TEAM_PROPOSED,
+    EventType.TEAM_VOTE_RECORDED,
+    EventType.MISSION_RESOLVED
+)
+
+/**
+ * 编辑会话（C-2）。
+ *
+ * `questNo` / `proposalNo` **取自被编辑的事件本身**，不是当前轮 ——
+ * 这是「编辑第一轮不会写到当前轮」的关键：保存时用这里的值构造替换事件。
+ */
+data class EditSession(
+    val targetEventId: com.roundtrace.app.core.model.EventId,
+    val eventType: EventType,
+    val questNo: Int,
+    val proposalNo: Int?
+)
+
+/** 一次提交（新增或编辑）的结果，供 UI 决定「关弹窗」还是「保留输入 + 重试」。 */
+sealed interface RecordCommitResult {
+
+    /** 写库成功。UI 收到后应关闭弹窗、清草稿，并调用 [RecordAction.AcknowledgeCommit]。 */
+    data object Succeeded : RecordCommitResult
+
+    /**
+     * 写库失败。UI **不得**关闭弹窗：保留用户输入、保留旧的有效事件，并给出重试入口。
+     *
+     * @param reason 稳定 key（`NOT_FOUND` / `INVALID_TARGET` / `WRITE_FAILED`），文案由 UI 映射
+     */
+    data class Failed(val reason: String) : RecordCommitResult
+}
+
+/**
  * 记录页 UiState（TDD §7.3 / TASKS.md T44①）。
  *
  * **全部字段都由 `observeBundle → ReplayEngine.replay` 派生**（T44④）：
@@ -125,12 +181,42 @@ data class RecordUiState(
     val missionDerivedOutcome: MissionOutcome? = null,
     /** 最近一次撤销的结果；UI 消费后通过 [RecordAction.ClearUndoFeedback] 清空 */
     val undoFeedback: UndoFeedback? = null,
+    /** 当前编辑会话；`null` = 新增模式（C-2） */
+    val editSession: EditSession? = null,
+    /**
+     * 录入弹层当前作用的轮次（C-2）。
+     *
+     * 编辑态取**被编辑事件所在轮**，新增态取当前轮。
+     * 弹层的期望队伍人数、失败牌门槛都必须按这个轮次算 ——
+     * 否则「编辑第 1 轮」会拿当前轮（如第 3 轮）的队伍人数去校验，用户永远提交不了。
+     */
+    val sheetQuestNo: Int = 0,
+    /** [sheetQuestNo] 对应的期望队伍人数（由 `AvalonRules` 计算，UI 不重算） */
+    val sheetExpectedTeamSize: Int = 0,
+    /** [sheetQuestNo] 对应的任务失败牌门槛（由 `AvalonRules` 计算，UI 不重算） */
+    val sheetFailThreshold: Int = 1,
+    /** 最近一次提交结果；UI 消费后通过 [RecordAction.AcknowledgeCommit] 清空 */
+    val commitResult: RecordCommitResult? = null,
+    /**
+     * 恢复编辑草稿时发现「目标事件已失效」（C-2）。
+     *
+     * 此时**保留用户输入**（不静默丢弃），只是不进入编辑态，由 UI 提示「原记录已变更，请重新加载」。
+     */
+    val editTargetInvalidated: Boolean = false,
     val errorMessage: String? = null
 ) {
 
     /** 是否有阻断级问题（UI 应禁用「确认」类按钮）。 */
     val hasBlockingIssue: Boolean
         get() = issues.any { it.isBlocking }
+
+    /** 是否处于编辑模式。 */
+    val isEditing: Boolean
+        get() = editSession != null
+
+    /** 保存中：UI 必须禁用提交按钮（防重复提交的第一道闸）。 */
+    val isSaving: Boolean
+        get() = saveStatus == SaveStatus.SAVING
 
     /** 队伍是否已选满（仅用于 UI 提示，不是规则判定）。 */
     val teamIsFull: Boolean
@@ -193,4 +279,17 @@ sealed interface RecordAction {
 
     /** 清空撤销反馈（UI 展示完 Snackbar 后调用）。 */
     data object ClearUndoFeedback : RecordAction
+
+    /**
+     * 打开某条历史记录的编辑态（C-2）。
+     *
+     * **按 `eventId` 定位**，不再按「事件类型 + 当前轮」——后者在编辑历史轮次时必然写错轮。
+     */
+    data class OpenEdit(val eventId: com.roundtrace.app.core.model.EventId) : RecordAction
+
+    /** 退出编辑态，丢弃编辑草稿（不写库）。 */
+    data object CancelEdit : RecordAction
+
+    /** UI 消费完 [RecordUiState.commitResult] 后清空（关弹窗/保留弹窗的分支也在 UI）。 */
+    data object AcknowledgeCommit : RecordAction
 }

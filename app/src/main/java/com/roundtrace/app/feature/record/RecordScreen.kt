@@ -75,6 +75,33 @@ fun RecordScreen(
     var showRollbackConfirm by rememberSaveable { mutableStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // C-2：**保存成功后才关弹窗**；失败保持打开（输入与旧事件都还在，可重试）
+    val commitFailedMessage = stringResource(R.string.record_commit_failed)
+    LaunchedEffect(state.commitResult) {
+        when (val result = state.commitResult) {
+            is RecordCommitResult.Succeeded -> {
+                sheet = RecordSheet.NONE
+                onAction(RecordAction.AcknowledgeCommit)
+            }
+
+            is RecordCommitResult.Failed -> {
+                // 失败：弹窗保持打开、输入保留，只提示可重试
+                snackbarHostState.showSnackbar(commitFailedMessage)
+                onAction(RecordAction.AcknowledgeCommit)
+            }
+
+            null -> Unit
+        }
+    }
+
+    // 恢复编辑草稿时目标事件已失效：明确告知，而不是静默丢弃用户输入
+    val editInvalidatedMessage = stringResource(R.string.record_edit_invalidated)
+    LaunchedEffect(state.editTargetInvalidated) {
+        if (state.editTargetInvalidated) {
+            snackbarHostState.showSnackbar(editInvalidatedMessage)
+        }
+    }
+
     // 撤销反馈 → Snackbar（T49②）
     val undoDone = stringResource(R.string.record_undo_done)
     val undoEmpty = stringResource(R.string.record_undo_empty)
@@ -231,14 +258,31 @@ fun RecordScreen(
                         RecordTimelineSection(
                             entries = state.timeline,
                             onEntryClick = { entry ->
-                                when (entry.eventType) {
-                                    com.roundtrace.app.core.model.EventType.MISSION_RESOLVED ->
+                                // C-2：**按 eventId 打开编辑态**，不再用「事件类型 + 当前轮」——
+                                // 后者编辑历史轮次时必然写到当前轮。
+                                val targetId = entry.sourceEventIds.firstOrNull()
+                                when {
+                                    targetId == null -> Unit
+                                    entry.eventType ==
+                                        com.roundtrace.app.core.model.EventType.MISSION_RESOLVED -> {
+                                        onAction(RecordAction.OpenEdit(targetId))
                                         sheet = RecordSheet.MISSION
-                                    com.roundtrace.app.core.model.EventType.TEAM_VOTE_RECORDED ->
+                                    }
+
+                                    entry.eventType ==
+                                        com.roundtrace.app.core.model.EventType.TEAM_VOTE_RECORDED -> {
+                                        onAction(RecordAction.OpenEdit(targetId))
                                         sheet = RecordSheet.VOTE
-                                    com.roundtrace.app.core.model.EventType.TEAM_PROPOSED ->
+                                    }
+
+                                    entry.eventType ==
+                                        com.roundtrace.app.core.model.EventType.TEAM_PROPOSED -> {
+                                        onAction(RecordAction.OpenEdit(targetId))
                                         sheet = RecordSheet.PROPOSAL
-                                    else -> {}
+                                    }
+
+                                    // 其余类型只读：不打开任何编辑弹窗
+                                    else -> Unit
                                 }
                             }
                         )
@@ -248,31 +292,38 @@ fun RecordScreen(
                 // —— 弹层 ——
                 when (sheet) {
                     RecordSheet.PROPOSAL -> ProposalSheet(
-                        questNo = quest.questNo,
-                        expectedTeamSize = quest.expectedTeamSize,
+                        // C-2：编辑态取**被编辑事件所在轮**与**该轮的期望人数**，
+                        // 不是当前轮 —— 否则编辑第 1 轮会按第 3 轮的人数校验，提交按钮永远不亮。
+                        questNo = state.sheetQuestNo.takeIf { it > 0 } ?: quest.questNo,
+                        expectedTeamSize = state.sheetExpectedTeamSize
+                            .takeIf { it > 0 } ?: quest.expectedTeamSize,
                         playerCount = state.playerCount,
                         leaderSeat = state.draft.leaderSeat,
                         teamSeats = state.draft.teamSeats,
-                        canSubmit = state.draft.teamSeats.size == quest.expectedTeamSize &&
+                        canSubmit = state.draft.teamSeats.size ==
+                            (state.sheetExpectedTeamSize.takeIf { it > 0 }
+                                ?: quest.expectedTeamSize) &&
                             state.draft.leaderSeat != null,
+                        isSaving = state.isSaving,
+                        isEditing = state.isEditing,
                         seatLabels = state.seatLabels,
                         seatAvatars = state.seatAvatars,
                         onSelectLeader = { seat -> onAction(RecordAction.SelectLeader(seat)) },
                         onToggleTeamSeat = { onAction(RecordAction.ToggleTeamSeat(it)) },
                         onSaveDraft = { onAction(RecordAction.SaveDraft) },
-                        onSubmit = {
-                            onAction(RecordAction.ConfirmProposal)
+                        onSubmit = { onAction(RecordAction.ConfirmProposal) },
+                        onDismiss = {
+                            if (state.isEditing) onAction(RecordAction.CancelEdit)
                             sheet = RecordSheet.NONE
-                        },
-                        onDismiss = { sheet = RecordSheet.NONE }
+                        }
                     )
 
                     RecordSheet.VOTE -> {
                         val proposalNo = (state.currentProposal?.proposalNo
                             ?: (quest.nextProposalNo - 1)).coerceAtLeast(1)
                         VoteSheet(
-                            questNo = quest.questNo,
-                            proposalNo = proposalNo,
+                            questNo = state.sheetQuestNo.takeIf { it > 0 } ?: quest.questNo,
+                            proposalNo = state.editSession?.proposalNo ?: proposalNo,
                             playerCount = state.playerCount,
                             votesBySeat = state.draft.votesBySeat,
                             approveCount = state.draft.approveCount,
@@ -280,6 +331,8 @@ fun RecordScreen(
                             decision = state.voteDecision,
                             halfCount = state.halfCount,
                             exceedsPlayers = state.voteExceedsPlayers,
+                            isSaving = state.isSaving,
+                            isEditing = state.isEditing,
                             seatAvatars = state.seatAvatars,
                             onSeatVote = { seat, vote -> onAction(RecordAction.SetVote(seat, vote)) },
                             onSummaryChange = { approve, reject ->
@@ -288,27 +341,36 @@ fun RecordScreen(
                             onSaveVotes = { onAction(RecordAction.SaveVotes) },
                             onDecision = { decision ->
                                 onAction(RecordAction.ConfirmVoteDecision(decision))
-                                sheet = RecordSheet.NONE
                             },
-                            onDismiss = { sheet = RecordSheet.NONE }
+                            onDismiss = {
+                                if (state.isEditing) onAction(RecordAction.CancelEdit)
+                                sheet = RecordSheet.NONE
+                            }
                         )
                     }
 
                     RecordSheet.MISSION -> MissionSheet(
-                        questNo = quest.questNo,
-                        failThreshold = quest.failThreshold,
+                        // 门槛同样按被编辑轮次取（第 4 轮起失败牌门槛不同）
+                        questNo = state.sheetQuestNo.takeIf { it > 0 } ?: quest.questNo,
+                        failThreshold = if (state.sheetQuestNo > 0) {
+                            state.sheetFailThreshold
+                        } else {
+                            quest.failThreshold
+                        },
                         failCount = state.draft.failCount,
                         observedOutcome = state.draft.observedOutcome,
                         derivedOutcome = state.missionDerivedOutcome,
+                        isSaving = state.isSaving,
+                        isEditing = state.isEditing,
                         onFailCountChange = { onAction(RecordAction.SetMissionFailCount(it)) },
                         onObservedOutcomeChange = {
                             onAction(RecordAction.SetMissionObservedOutcome(it))
                         },
-                        onSave = {
-                            onAction(RecordAction.SaveMission)
+                        onSave = { onAction(RecordAction.SaveMission) },
+                        onDismiss = {
+                            if (state.isEditing) onAction(RecordAction.CancelEdit)
                             sheet = RecordSheet.NONE
-                        },
-                        onDismiss = { sheet = RecordSheet.NONE }
+                        }
                     )
 
                     RecordSheet.NONE -> Unit

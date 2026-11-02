@@ -536,3 +536,21 @@ UI 只能通过 `canOpenGodView` 进入（`PerspectiveSwitcher` 禁用态 + `Rep
 - 6 个测试按新规则重写断言：`AvalonStateMachineTest R11`、`AvalonMissionRulesTest R12`、
   `AvalonEventValidationTest R13`、`AvalonReducerReplayTest R14`（3 个）；
 - `ARCHITECTURE.md`：§4 模型注释、§6.1 规则表、异常表第 10 行、§不变量第 8 条、设计原则表。
+
+### B35. 历史记录可编辑的只有 3 类事件；改票**不得**顺手改决议（2026-11-02 主理人裁决）
+
+**背景**：RT-003 C-2 要给「点时间线修改历史记录」定可编辑范围。实施方案第 1 节原文是
+「编辑**组队提案、组队投票和任务结果**」，容易被顺手扩成 4 类（把决议也算进去）。
+
+**决策**：可编辑白名单只放 `TEAM_PROPOSED` / `TEAM_VOTE_RECORDED` / `MISSION_RESOLVED`
+（唯一判据在 `feature/record/RecordUiState.kt` 的 `EDITABLE_EVENT_TYPES`）。`TEAM_PROPOSAL_RESOLVED`
+只读，不给编辑入口。
+
+**理由**：决议是**现场既成事实**，§C.8 要求「与已有现场通过／否决记录冲突时提示复核，
+**不静默改写现场事实**」。若决议也可编辑，「改票数导致决议矛盾」与「直接改决议」两条路径会互相打架，
+事后无法判断哪个才是现场真实发生的。
+
+**因此的硬约束**：编辑 `TEAM_VOTE_RECORDED` 后**不改同轮** `TEAM_PROPOSAL_RESOLVED`。
+新票数与既有决议矛盾时，让 reducer 的 `DECISION_VOTE_CONFLICT` 浮出来、UI 提示复核，原决议保持不动。
+记录错了要改决议，走「撤销最近一条 + 重录」这条显式路径。
+`RecordEditSessionTest.editingVoteDoesNotTouchProposalDecision` 钉住这条。

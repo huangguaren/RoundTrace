@@ -40,6 +40,8 @@ fun VoteSheet(
     decision: ProposalDecision,
     halfCount: Int,
     exceedsPlayers: Boolean,
+    isSaving: Boolean = false,
+    isEditing: Boolean = false,
     seatAvatars: Map<Int, String?> = emptyMap(),
     onSeatVote: (Int, TeamVoteChoice) -> Unit,
     onSummaryChange: (Int?, Int?) -> Unit,
@@ -59,7 +61,8 @@ fun VoteSheet(
             verticalArrangement = Arrangement.spacedBy(Dimens.Spacing16)
         ) {
             Text(
-                text = stringResource(R.string.vote_sheet_title, questNo, proposalNo),
+                text = (if (isEditing) stringResource(R.string.record_mode_edit) + " · " else "") +
+                    stringResource(R.string.vote_sheet_title, questNo, proposalNo),
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -83,7 +86,7 @@ fun VoteSheet(
             ) {
                 OutlinedButton(
                     onClick = onSaveVotes,
-                    enabled = !exceedsPlayers,
+                    enabled = !exceedsPlayers && !isSaving,
                     shape = ButtonShape,
                     modifier = Modifier
                         .weight(1f)
@@ -93,7 +96,7 @@ fun VoteSheet(
                 }
                 Button(
                     onClick = { onDecision(ProposalDecision.APPROVED) },
-                    enabled = !exceedsPlayers,
+                    enabled = !exceedsPlayers && !isSaving,
                     shape = ButtonShape,
                     modifier = Modifier
                         .weight(1f)
@@ -103,7 +106,7 @@ fun VoteSheet(
                 }
                 Button(
                     onClick = { onDecision(ProposalDecision.REJECTED) },
-                    enabled = !exceedsPlayers,
+                    enabled = !exceedsPlayers && !isSaving,
                     shape = ButtonShape,
                     modifier = Modifier
                         .weight(1f)

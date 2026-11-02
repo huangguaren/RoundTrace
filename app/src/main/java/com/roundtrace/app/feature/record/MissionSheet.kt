@@ -33,6 +33,8 @@ fun MissionSheet(
     failCount: Int?,
     observedOutcome: MissionOutcome?,
     derivedOutcome: MissionOutcome?,
+    isSaving: Boolean = false,
+    isEditing: Boolean = false,
     onFailCountChange: (Int?) -> Unit,
     onObservedOutcomeChange: (MissionOutcome?) -> Unit,
     onSave: () -> Unit,
@@ -50,7 +52,8 @@ fun MissionSheet(
             verticalArrangement = Arrangement.spacedBy(Dimens.Spacing16)
         ) {
             Text(
-                text = stringResource(R.string.mission_sheet_title, questNo),
+                text = (if (isEditing) stringResource(R.string.record_mode_edit) + " · " else "") +
+                    stringResource(R.string.mission_sheet_title, questNo),
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -67,6 +70,7 @@ fun MissionSheet(
 
             Button(
                 onClick = onSave,
+                enabled = !isSaving,
                 shape = ButtonShape,
                 modifier = Modifier
                     .fillMaxWidth()

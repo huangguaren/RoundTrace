@@ -73,6 +73,9 @@ class FakeMatchRepository(
      */
     var loadDraftGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
+    /** 置 true 后下一次 append/revise 返回 WRITE_FAILED（模拟写库失败，用于「失败保留输入」用例）。 */
+    var failNextWrite: Boolean = false
+
     override fun observeSummaries(filter: MatchStatusFilter): Flow<List<MatchSummary>> =
         eventsState.map { listOf(buildSummary(it)) }
 
@@ -85,6 +88,15 @@ class FakeMatchRepository(
     override suspend fun createMatch(draft: MatchCreationDraft): MatchId = matchId
 
     override suspend fun appendEvent(matchId: MatchId, event: MatchEvent): AppendResult {
+        if (failNextWrite) {
+            failNextWrite = false
+            return AppendResult(
+                matchId = matchId,
+                eventId = event.eventId,
+                occurredOrder = null,
+                error = com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED
+            )
+        }
         // 与 RoomMatchRepository 的行为对齐：首次提交某任务提案时自动补建 QUEST_STARTED
         // （ARCHITECTURE §9.3-18）。真实事务语义由 androidTest 覆盖。
         if (event is com.roundtrace.app.core.model.TeamProposed &&
@@ -127,6 +139,15 @@ class FakeMatchRepository(
         targetEventId: EventId,
         replacement: MatchEvent
     ): AppendResult {
+        if (failNextWrite) {
+            failNextWrite = false
+            return AppendResult(
+                matchId = matchId,
+                eventId = replacement.eventId,
+                occurredOrder = null,
+                error = com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED
+            )
+        }
         eventsState.value = eventsState.value.map {
             if (it.eventId == targetEventId) retract(it) else it
         }

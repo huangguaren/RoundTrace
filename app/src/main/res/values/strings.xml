@@ -128,6 +128,9 @@
     <string name="record_proposal_count">第 %1$d 次提案</string>
     <string name="record_phase_label">当前阶段：%1$s</string>
     <string name="record_quest_started">本任务已开始</string>
+    <string name="record_mode_edit">编辑</string>
+    <string name="record_edit_invalidated">原记录已变更，请重新加载</string>
+    <string name="record_commit_failed">保存失败，输入已保留，可重试</string>
     <string name="record_quest_not_started">本任务尚未开始（可先提交提案，系统会自动补建任务节点）</string>
 
     <!-- 保存状态 -->
