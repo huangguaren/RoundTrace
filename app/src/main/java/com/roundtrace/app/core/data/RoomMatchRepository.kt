@@ -103,13 +103,8 @@ class RoomMatchRepository(
     }
 
     override suspend fun getBundle(matchId: MatchId): MatchBundle? {
-        val matchEntity = matchDao.findById(matchId.raw) ?: return null
-        return buildBundle(
-            matchEntity = matchEntity,
-            participants = participantDao.listByMatch(matchId.raw),
-            roles = roleDao.listByMatch(matchId.raw),
-            eventEntities = eventDao.listActive(matchId.raw)
-        )
+        // NX-02：四表读收进同一事务，避免撕裂读
+        return database.withTransaction { readBundleLocked(matchId) }
     }
 
     /**
