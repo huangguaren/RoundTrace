@@ -1,20 +1,21 @@
 # RoundTrace 代码审计终态报告（final-audit）
 
-> 审计基线：`a6da7c4`（v0.3.0）→ 修复后：`35b1b30` + 阶段 E 提交
+> 审计基线：`a6da7c4`（v0.3.0）→ 阶段 E 基线：`35b1b30`；本轮 P1 实施基于 `3fa458c`，代码尚在工作区
 > 审计输入：`RoundTrace_Code_Audit_2026-10-31.md`（RT-001 ～ RT-031）
 > 执行方案：`docs/IMPLEMENTATION_PLAN_AI_CODING.md`（阶段 A–E + V01–V12 验证矩阵）
-> 本轮实测：**356 个 JVM 单测 / 52 个测试类 / 0 失败 / 0 跳过**；`lintDebug` 0 error；`assembleDebug` 通过
+> 最新实测（2026-11-02）：**433 个 JVM 单测 / 62 个测试类 / 0 失败 / 0 跳过**；模拟器仪器测试 **24/24 通过**；`lintDebug` 0 error；`assembleDebug` 通过。历史阶段 E 结果见 `docs/TEST_REPORT.md` §12，当前复验见 §13。
 > 独立验收：`docs/audit/qa-phase1.md`（4 个 P0）、`docs/audit/qa-phase-d.md`（V01–V12 + 复验）
 
 ## 0. 一页结论
 
 | 终态 | 条数 | 说明 |
 |---|---|---|
-| **fixed** | 12 | 本轮真实修复并有自动化测试钉住 |
-| **partial** | 2 | 主体已修，但仍有残留缺口，已写明 |
-| **deferred** | 19 | 有意推迟，理由逐条写明（不是遗忘） |
-| **新增发现并已修** | 6 | 本轮在实施与验收过程中新发现的问题（编号 N-*） |
-| **新增发现未修** | 3 | N-*，均为 P2/P3，列入后续 |
+| **RT fixed** | 15 | RT-001～007、RT-008～014、RT-024，均有实现与测试证据 |
+| **RT partial** | 1 | RT-015，规则语义已统一，A04 文案仍待处理 |
+| **RT deferred** | 14 | 有意推迟，原因逐条写明 |
+| **RT retained** | 1 | RT-021，因迁移约束保留 |
+| **新增发现已修** | 9 | N-1～N-7、N-9、N-10，均有实现或测试证据 |
+| **新增发现待评估** | 1 | N-8，仅告警存量跨局链；不自动改写历史数据 |
 
 **规则权威性确认**：`docs/decisions.md` B34（结果明确即计数，`verified` 仅表可复核性）在本轮全程保持不变，
 未被任何「优化」改回旧规则；B36（v4 预发布可就地修正）、B37（可编辑事件限定 3 类）为本轮新增裁决。
@@ -30,13 +31,13 @@
 | RT-005 | P0 | **fixed** | `core/replay/VisibleEventPolicy` 作唯一出口（含复盘时间线）；`017b98e`/`73ffc84`；QA 5 出口 × 7 例 |
 | RT-006 | P1 | **fixed** | 草稿恢复 + `draftTouchedByUser` 判据；`fe6c408`；QA V11 |
 | RT-007 | P1 | **fixed** | 事务化 `reviseEvent`（事务内复核 + 三条件撤销）；`5f11b30`；QA V05/V06 |
-| RT-008 | P1 | deferred | 揭晓仍分「存角色」「写揭晓时刻」两次事务。**未修**：数据一致但非原子，需要单独的 `revealMatch` 端口改造 |
-| RT-009 | P1 | deferred | 头像仍用 `GetContent` + 吞掉 `takePersistableUriPermission` 异常。**未修**：属 P1 批次，需与头像组件一起改 |
-| RT-010 | P1 | deferred | 三处 `remember { decodeStream }` 仍在主线程同步解码。**未修**：需抽 `SeatAvatar` 异步组件 |
-| RT-011 | P1 | deferred | `backup_rules.xml` / `data_extraction_rules.xml` 仍未覆盖 `files/datastore/`。**未修**：与 RT-009/010 同批 |
-| RT-012 | P1 | deferred | JSON 往返仍只带 seat/name/color，座位布局与头像引用未导出。**未修**：需版本化 ExportBundle |
-| RT-013 | P1 | deferred | 导入 JSON 仍无大小/条数/字符串长度上限。**未修**：属 P1 批次，与 RT-012 一起做 |
-| RT-014 | P1 | deferred | 回滚仍逐条 `retractEvent`。**未修**：需 `retractAfterOrder` 原子批量 |
+| RT-008 | P1 | **fixed** | `revealMatch` 在单个 Room transaction 内写身份、首次 `revealedAt` 与状态投影；SQLite 触发器失败测试验证整体回滚。`AtomicMatchOperationsTest`、`StatusProjectionTest` |
+| RT-009 | P1 | **fixed** | 头像选择改用 `OpenDocument` 并保存持久读取授权；异步解码前验证来源可读，撤权或删除后不使用旧缓存。`AvatarLoadCacheTest` |
+| RT-010 | P1 | **fixed** | 三处座位头像合并为异步采样解码组件；限制并发和缓存预算，切换 URI 时不短暂显示旧头像。`AvatarDecodeTest`、`AvatarSamplingTest`、`AvatarDecodeGuardTest` |
+| RT-011 | P1 | **fixed** | Auto Backup 与设备传输规则排除 `file/datastore/`；规则审计测试覆盖两套 XML。`DataStoreBackupRulesTest` |
+| RT-012 | P1 | **fixed** | JSON schema 升至 v2，导出版携带座位布局和头像 URI 引用，继续接受 v1；头像图片本体不打包，无当前设备授权时导入清空引用并报告数量。`ImportBoundaryTest`、`JsonCodecTest` |
+| RT-013 | P1 | **fixed** | 导入加入 UTF-8 字节、数组条数、参与人数、文本长度和嵌套深度上限；文件选择按字节预算流式读取，超限停止且不落库。`ImportBoundaryTest`、`ImportTextReaderTest` |
+| RT-014 | P1 | **fixed** | `retractAfterOrder` 单事务按 `matchId + logicalPosition` 批量撤销并重算投影；缺少目标任务时拒绝回滚，失败整体回滚。`AtomicMatchOperationsTest`、`AtomicWriteViewModelTest` |
 | RT-015 | P1 | **partial** | A12 与 B34 的语义冲突已在 `decisions.md`/README 统一；**A04「失败牌为 0」的实际推论文案仍未改** |
 | RT-016 | P1 | deferred | `ReplayViewModel` 仍有多次 snapshot。**未修**：性能项，需 before/after 测量 |
 | RT-017 | P1 | deferred | `HomeViewModel` 仍双重订阅 `summaries`。**未修**：性能项，与 RT-016 同批 |
@@ -65,14 +66,15 @@
 | N-4 | P2 | 时间线不显示 `PlayerClaimed.text`，「关键言论」写的话记录页与复盘页都看不到 | `c401951`：原文进 detail（>60 字截断），可见性判断不变 |
 | N-5 | P2 | 一次性投影刷新逐局吞异常、仍写标记 → 坏局永久停在旧结论 | `856cd38`：任一失败即不写标记 + 记录失败 matchId |
 | N-6 | P2 | 弹层用**当前轮**的人数/门槛校验草稿，编辑早期任务时提交按钮永远点不亮 | `ec83007`：改按 `editSession?.questNo` 计算 |
+| N-7 | P3 | 投影完成标记缺少可测试的判定缝 | `ProjectionRefreshCoordinator` 纯函数 + 4 条真值表用例（阶段 E） |
+| N-9 | P3 | 时间线声称详情的空值回退是不可达分支 | 删除死分支并注明理由（阶段 E） |
+| N-10 | P1 | 提案队长星标与上车成员状态耦合；重复点击队长会清空队长，无法稳定让队长上车 | 独立队长选择/更换模式与成员集合；普通点击只切换上车状态，支持队长上车/下车、换队长保留成员、重复点幂等。`ProposalSheetTest` 8 例 + 模拟器触控 3 例 |
 
-## 3. 本轮新发现未修（列入后续）
+## 3. 本轮新发现待评估
 
 | ID | 级别 | 问题 | 建议 |
 |---|---|---|---|
-| N-7 | P3 | `AppContainer` 写投影标记的逻辑原先无测试缝（改成「不管 isComplete 就写」也不会红） | 已修：`ProjectionRefreshCoordinator` 纯函数 + 真值表 4 例（`caf4fdf`） |
 | N-8 | P3 | 跨局 `supersedesId` 链的**存量**数据只做告警不修复 | 保留告警；是否修复需人工评估，**不得自动改历史数据** |
-| N-9 | P3 | `TimelineBuilder.claimDetail` 原 `ifEmpty { "公开发言" }` 是不可达分支 | 已修：删除并注明理由（阶段 E） |
 
 ## 4. 有意「不合并 / 不删除」的三处（避免后续误判为疏漏）
 
@@ -83,17 +85,31 @@
 3. **`material-icons-extended` 暂不删**（审计 §3）：官方已不再维护，但替换为本地 VectorDrawable 需要
    逐个 icon 核对与可访问性回归，属于独立 PR（RT-027 同批）。
 
-## 5. 未验证项（NOT RUN，如实记录）
+## 5. 历史未验证项（截至阶段 E；本轮结果见 §6）
 
 | 项 | 原因 | 影响 |
 |---|---|---|
-| `connectedDebugAndroidTest`（含 `MigrationV3ToV4Test`） | 本机无设备/模拟器 | **`@ColumnInfo(defaultValue)` 与 `ALTER TABLE DEFAULT` 的一致性只有间接证据**（4.json 实测 + 迁移后库可正常打开），严格校验需 `runMigrationsAndValidate` |
+| `connectedDebugAndroidTest`（含 `MigrationV3ToV4Test`） | 阶段 E 结束时没有可用设备 | 已由 §6 所列模拟器仪器测试补验迁移；真机迁移仍未验证 |
 | 真机杀进程后草稿/编辑目标恢复 | 无设备 | V11 用 ViewModel 重建 + 持久化草稿做代理验证 |
 | WAL checkpoint-busy 真机分支 | Robolectric 共享句柄，造不出 busy | 已用注入式测试钉住判定分支；真机行为未验 |
 | Compose 像素级 / 字体放大 / 分享面板 | 无设备 | UI 只有编译期与状态层保证 |
 | GitHub Actions CI | 未配置 | 所有验证仍依赖本地执行 |
 
-## 6. 发版约束（必须遵守）
+## 6. P1 批次与提案队长交互复验（2026-11-02）
+
+本轮完成 RT-008～RT-014 七项 P1，另修复 N-10 队长/成员选择冲突。实现与测试细节见 RT 表和 `docs/TEST_REPORT.md` §13。
+
+| 验证 | 结果 |
+|---|---|
+| 全量 JVM 单测 | **433 / 433 通过**，62 个测试类，0 失败、0 跳过 |
+| 新增对抗/边界用例 | 揭晓与回滚事务 9；ViewModel 原子入口 7；JSON 边界 13；流式文件读取 6；头像与备份规则 34；提案弹窗 8 |
+| Android 仪器测试 | **24 / 24 通过**，API 34 模拟器；含 v3→v4 严格迁移校验及 3 条真实触控队长交互 |
+| `lintDebug` | 0 error、51 warning、3 information |
+| Debug APK | versionCode 4 / 0.4.0，20,600,470 bytes |
+
+仍需真机补验：SAF 授权在重启/撤权/跨设备后的真实行为，系统字体放大与 TalkBack，以及 WAL checkpoint-busy 的设备级连接占用场景。模拟器触控测试覆盖布局范围，不等于像素或无障碍验收。
+
+## 7. 发版约束（必须遵守）
 
 - **v4 与逻辑顺序修复必须同一个 versionCode 一起发**：Step 1（v4 迁移）与 Step 3（读路径切换）
   单独发版等于「承担全部 schema 风险、零用户收益」。本轮两者同在 `versionCode 4`。

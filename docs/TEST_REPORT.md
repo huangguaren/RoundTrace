@@ -1,11 +1,11 @@
 # RoundTrace 测试报告（TEST_REPORT）
 
-> 生成日期：2026-10-30；**最后更新：2026-11-02（代码审计轮 A–E + F1–F5 完成后重跑）**
+> 生成日期：2026-10-30；**最后更新：2026-11-02（完成 RT-008～RT-014 与队长交互修复后复验）**
 > 覆盖范围：**M0（T01–T10）+ M1（T11–T27）+ M2（T28–T43）+ M3（T44–T49）+ M4（T50–T58）+ M5（T59–T65）**，以及 2026-10-31 起的代码审计轮（RT-001～RT-031）
-> 结论：**`./gradlew :app:testDebugUnitTest --rerun-tasks` 全绿（356 个用例 / 52 个测试类，0 失败、0 跳过）；`lintDebug` 0 error；`assembleDebug` 成功产出 APK。**
-> T43 的 Room 用例已通过 **Robolectric 在 JVM 上真实跑绿**（见 §8），仪器测试文件保留给真机使用。
+> 最新结论见 §13：**433 个 JVM 用例 / 62 个测试类、24 个 API 34 模拟器仪器用例全部通过；`lintDebug` 0 error；`assembleDebug` 成功。** §12 保留阶段 E 的历史基线（356 个用例）。
+> T43 的 Room 用例已通过 **Robolectric 在 JVM 上真实跑绿**（见 §8）；v3→v4 严格迁移与队长点击路径另在 API 34 模拟器实测通过（见 §13）。
 > 所有结论均为**本机实测**，命令与输出摘要见下；**本轮审计的完整证据见 `docs/audit/`**（baseline / progress / qa-phase1 / qa-phase-d / final-audit / migration-plan）。
-> 仪器测试（`connectedDebugAndroidTest`）**未执行**（无设备）——详见 §12.3。
+> §4、§7.5、§8.6、§9.7、§10.7、§12.3 中的“无设备/未执行”是各阶段的历史记录；当前仪器测试状态以 §13 为准。
 
 ---
 
@@ -142,7 +142,7 @@ HTML 报告：`app/build/reports/tests/testDebugUnitTest/index.html`
 
 ---
 
-## 4. 未执行项（如实记录）
+## 4. 历史未执行项（2026-10-30 记录；后续状态见 §13）
 
 | 项 | 状态 | 原因 |
 |---|---|---|
@@ -474,7 +474,7 @@ TOTAL tests=134   failures=0
 > 阶段轨迹见 `docs/audit/progress.md`，独立验收见 `docs/audit/qa-phase1.md` 与 `docs/audit/qa-phase-d.md`，
 > RT 问题终态见 `docs/audit/final-audit.md`。
 
-### 12.1 执行命令与结果（2026-11-02，`HEAD=35b1b30` + 阶段 E）
+### 12.1 阶段 E 历史结果（2026-11-02，`HEAD=35b1b30`）
 
 ```bash
 export JAVA_HOME="/c/Users/HK-info/android-build/jdk"
@@ -511,7 +511,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 | `CommitDuringDraftSaveAuditTest` | 3 | 草稿保存窗口内提交**必须落库**；连点两次只写一条 |
 | `BackupOutcomeAuditTest` / `TimelineClaimTextAuditTest` | 4 | 备份结果三态与降级；声称原文进时间线且公开视角不可见 |
 
-### 12.3 未执行项（如实记录，NOT RUN）
+### 12.3 阶段 E 时尚未执行项（当时无设备；本轮状态见 §13）
 
 | 项 | 原因 | 风险 |
 |---|---|---|
@@ -526,8 +526,64 @@ export PATH="$JAVA_HOME/bin:$PATH"
    `Unable to delete …/kotlin-classes/debug/com`、`Could not delete …/R.jar`、
    `CorruptedException: kspCaches/symbolLookups`、以及「明明存在的符号报 unresolved」。
    **判据：先怀疑环境，再怀疑代码**——`./gradlew clean` 后复跑即可；不要为此改生产代码。
-2. **数字口径**：本轮出现过「代码树 324 / 部分审计 345 / 全量 356」三套数。
-   权威口径是**当前 HEAD 的 `--rerun-tasks` 全量**；引用时必须写明口径，否则无法对账。
+2. **数字口径**：阶段 E 出现过「代码树 324 / 部分审计 345 / 全量 356」三套数。
+   阶段 E 的权威口径是当时 `--rerun-tasks` 全量；当前工作区全量口径见 §13，避免混用历史数字。
 3. **迁移测试无法在 JVM 跑**：`MigrationTestHelper` 从 instrumentation assets 读 schema，
    Robolectric 下不可见，故 `MigrationV3ToV4Test` 落在 `androidTest`；JVM 侧由
    `MigrationBackfillManualTest`（直连 SQLite 跑回填 SQL）承担回填正确性验证。
+
+## 13. P1 批次与提案队长交互（2026-11-02，工作区基于 `3fa458c`）
+
+本节记录用户要求继续完成的七项 P1：RT-008～RT-014；并记录提案选择队长/上车成员冲突的修复。旧阶段的测试数字和“无设备”状态在 §12 中保留为历史，不代表本轮结果。
+
+### 13.1 最新命令与结果
+
+```powershell
+$env:JAVA_HOME='C:\Users\HK-info\android-build\jdk'
+$env:ANDROID_HOME='C:\Users\HK-info\android-build\sdk'
+& 'C:\Users\HK-info\android-build\gradle\bin\gradle.bat' `
+  :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin `
+  --offline --no-daemon --console=plain '-Pkotlin.compiler.execution.strategy=in-process'
+& 'C:\Users\HK-info\android-build\gradle\bin\gradle.bat' `
+  :app:connectedDebugAndroidTest --offline --no-daemon --console=plain `
+  '-Pkotlin.compiler.execution.strategy=in-process'
+```
+
+| 项 | 最新结果 |
+|---|---|
+| JVM 单元测试 | **433 通过 / 0 失败 / 0 跳过，62 个测试类** |
+| API 34 模拟器仪器测试 | **24 通过 / 0 失败 / 0 跳过**；包括 7 条 v3→v4 严格迁移测试、Room 仓储测试及 3 条队长实际触控测试 |
+| `lintDebug` | **0 error / 51 warning / 3 information** |
+| Android 测试源码编译 | 通过 |
+| `assembleDebug` | 通过 |
+| APK | `app/build/outputs/apk/debug/app-debug.apk`；versionCode 4 / versionName 0.4.0；**20,600,470 bytes** |
+
+### 13.2 本批实现与针对性证据
+
+| ID / 功能 | 实施结果 | 验证证据 |
+|---|---|---|
+| RT-008 揭晓原子性 | `revealMatch` 同一 Room transaction 写角色、首次揭晓时间和状态投影；事务失败整体回滚，重复揭晓不覆盖时间 | `AtomicMatchOperationsTest`（9 条，含触发器失败注入与并发）；`StatusProjectionTest` |
+| RT-009/010 头像引用与解码 | 使用 `OpenDocument` 保存可持久读取授权；IO 线程检查权限、读取来源元数据并采样解码，限并发与 LRU 缓存；撤权/删图后不返回旧图 | `AvatarDecodeTest` 4、`AvatarLoadCacheTest` 11、`AvatarSamplingTest` 11、`AvatarDecodeGuardTest` 5 |
+| RT-011 DataStore 备份范围 | Auto Backup 与 device transfer 均排除 `file/datastore/` | `DataStoreBackupRulesTest` 3 |
+| RT-012 JSON 往返 | schema v2 增加布局坐标与头像 URI 引用，仍可导入 v1；不携带图片文件，未获当前设备授权的 URI 被清除并计数提示 | `ImportBoundaryTest`、`JsonCodecTest` |
+| RT-013 导入边界 | 限制 UTF-8 体积 2 MiB、数组 5000 条、参与者/角色 10、单文本 16,384 字符、嵌套深度 64；文件选择最多读取预算加一个探测字节，超限不落库 | `ImportBoundaryTest` 13、`ImportTextReaderTest` 6 |
+| RT-014 原子回滚 | `retractAfterOrder` 按对局与 `logicalPosition` 批量撤销并重算投影；ViewModel 单次调用，错误结果不清空输入 | `AtomicMatchOperationsTest` 9、`AtomicWriteViewModelTest` 7 |
+| N-10 队长/上车解耦 | 初次选队长后进入成员模式；一般座位点击只切换上车状态，包含队长；重复点只切换成员状态，不清除队长；明确进入/取消“更换队长”模式，换队长保留成员 | `ProposalSheetTest` 8；API 34 实际触控测试 3 |
+
+### 13.3 队长交互验收逻辑
+
+1. 没有队长时，点一个座位只设队长并显示星标，且不自动加入上车集合。
+2. 已有队长时，普通座位点击只对 `teamSeats` 做成员切换；队长身份单独存于 `leaderSeat`。因此队长可以上车或下车，星标不受成员切换影响。
+3. 更换队长需显式进入“更换队长”；选中后只更新 `leaderSeat`，保留原上车名单，包括原队长成员状态。选回同一队长是幂等操作；取消更换也不改队伍。
+4. 保存期间禁用座位、换队长与提交；仍在选择队长时不允许提交。
+
+### 13.4 仍需人工/真机验证
+
+| 项 | 状态与边界 |
+|---|---|
+| SAF 真实授权 | 自动化覆盖可读、撤权、失效 URI；仍需真机确认系统文件选择器的持久授权行为、设备重启后的表现。跨设备 JSON 不携带图像字节，授权不存在时必须重选头像 |
+| 大字体 / TalkBack / 像素验收 | 未做实体设备人工验收。API 34 模拟器测试已验证三条座位触控路径，但 `ProposalSheetTest` 的 8 条本地 Compose 测试不等于无障碍或像素验收 |
+| WAL checkpoint busy | 已有注入与审计测试；不同设备连接占用时的底层行为未作人工压力验证 |
+| 进程被系统回收 | 有状态与草稿恢复自动化覆盖；真实设备杀进程、恢复编辑目标仍需手测 |
+
+APK 与测试结果仅在本地工作区生成；本轮未提交或推送 GitHub。
