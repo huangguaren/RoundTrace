@@ -103,8 +103,23 @@ abstract class MatchEventDao {
     @Query("SELECT COALESCE(MAX(logicalPosition), 0) + 1 FROM match_events WHERE matchId = :matchId")
     abstract suspend fun nextLogicalPosition(matchId: String): Int
 
-    @Query("SELECT logicalPosition, revisionSeq FROM match_events WHERE matchId = :matchId AND id = :id")
+    /**
+     * 取修订种子。
+     *
+     * **必须带 `retracted = 0`**：目标若已被撤销（例如另一个并发修订抢先），
+     * 就应该查不到种子 → `reviseWithSlot` 直接抛异常回滚，而不是继续插入一个新版本。
+     */
+    @Query(
+        "SELECT logicalPosition, revisionSeq FROM match_events " +
+            "WHERE matchId = :matchId AND id = :id AND retracted = 0"
+    )
     abstract suspend fun findRevisionSeed(matchId: String, id: String): RevisionSeed?
+
+    /** 事务内复核目标是否**仍然有效**（存在、属于本局、未撤销）。 */
+    @Query(
+        "SELECT * FROM match_events WHERE matchId = :matchId AND id = :id AND retracted = 0"
+    )
+    abstract suspend fun findActiveById(matchId: String, id: String): MatchEventEntity?
 
     /**
      * 撤销事件，**按对局限定**（RT-002）。
@@ -113,9 +128,15 @@ abstract class MatchEventDao {
      * 事件 id 是 UUID 时几乎不可能撞上，但一旦撞上就是跨对局数据损坏，
      * 而且 SQL 本身没有任何东西阻止它。
      *
-     * @return 受影响行数：1 = 成功，0 = 事件不属于该对局或不存在
+     * 条件是 `id + matchId + retracted = 0` **三者同时满足**，这是并发修订的最终防线：
+     * 两个请求同时修订同一目标时，撤销语句最多命中一行，另一个拿到 0 行 → 抛异常回滚。
+     *
+     * @return 受影响行数：1 = 成功，0 = 不属于该局 / 不存在 / **已被撤销**
      */
-    @Query("UPDATE match_events SET retracted = 1 WHERE id = :id AND matchId = :matchId")
+    @Query(
+        "UPDATE match_events SET retracted = 1 " +
+            "WHERE id = :id AND matchId = :matchId AND retracted = 0"
+    )
     abstract suspend fun markRetracted(matchId: String, id: String): Int
 
     @Query(

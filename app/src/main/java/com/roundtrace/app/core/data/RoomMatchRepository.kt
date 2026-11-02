@@ -49,6 +49,16 @@ import kotlinx.coroutines.flow.map
  * `COALESCE(MAX(occurredOrder),0)+1` 取值后**通过 [EventCodec.encode] 的 `occurredOrder` 参数落列**，
  * 从而保证「事件的游戏内顺序」只由仓储盖章，不会被领域层误填。
  */
+/**
+ * 修订冲突（内部用）。
+ *
+ * 继承 [IllegalStateException] 而不是自定义基类：它表达的是「当前状态不允许这次操作」，
+ * 与 `reviseWithSlot` 里 `check(...)` 抛出的异常同族，便于统一捕获。
+ * **刻意不捕获 `CancellationException`**（它不是 IllegalStateException），
+ * 协程取消必须能正常传播。
+ */
+private class RevisionConflictException(message: String) : IllegalStateException(message)
+
 /** 与 `RoundTraceDatabase` 的自检/备份共用一个 tag，方便抓一次完整启动日志。 */
 private const val DB_LOG_TAG = "RoundTraceDb"
 
@@ -212,6 +222,10 @@ class RoomMatchRepository(
         if (targetEntity.matchId != matchId.raw) {
             return failed(matchId, RepositoryError.INVALID_SUPERSEDE_TARGET)
         }
+        // C-1：目标必须**仍然有效**（未被撤销）。这里只是快速失败，真正的防线在事务内。
+        if (targetEntity.retracted) {
+            return failed(matchId, RepositoryError.INVALID_SUPERSEDE_TARGET)
+        }
 
         val target = try {
             codec.decode(targetEntity)
@@ -229,25 +243,54 @@ class RoomMatchRepository(
         val issues = rules.validateEvent(state, replacement)
 
         val committedAt = now
-        return database.withTransaction {
-            val slot = eventDao.reviseWithSlot(
-                matchId = matchId.raw,
-                oldEventId = targetEventId.raw,
-                entityProvider = { s ->
-                    // 修订链：新事件的 supersedesId 指向被替代事件（列以本处为准）
-                    codec.encode(replacement, matchId, s.occurredOrder, s.logicalPosition, s.revisionSeq)
-                        .copy(supersedesId = targetEventId.raw)
-                },
-                now = committedAt
-            )
-            // 修订会改变历史事实，状态必须跟着重算（RT-004）
-            recomputeProjectionLocked(matchId)
-            AppendResult(
-                matchId = matchId,
-                eventId = replacement.eventId,
-                occurredOrder = slot.occurredOrder,
-                issues = issues
-            )
+        return try {
+            database.withTransaction {
+                // —— 事务内复核（C-1 的核心）——
+                // 上面的检查都在事务外：两个请求可能同时通过，都认为目标有效。
+                // 进入事务后再确认一次「目标仍存在、属于本局、未撤销、类型未变」，
+                // 任何一条不满足就抛异常 → 事务回滚 → **一行都不会写入**。
+                val fresh = eventDao.findActiveById(matchId.raw, targetEventId.raw)
+                    ?: throw RevisionConflictException(
+                        "修订目标已失效（可能被并发修订先行撤销）：eventId=${targetEventId.raw}"
+                    )
+                if (fresh.eventType != targetEntity.eventType) {
+                    throw RevisionConflictException(
+                        "修订目标的事件类型已变更：期望 ${targetEntity.eventType}，实际 ${fresh.eventType}"
+                    )
+                }
+
+                val slot = eventDao.reviseWithSlot(
+                    matchId = matchId.raw,
+                    oldEventId = targetEventId.raw,
+                    entityProvider = { s ->
+                        // 修订链：新事件的 supersedesId 指向被替代事件（列以本处为准）
+                        codec.encode(
+                            replacement,
+                            matchId,
+                            s.occurredOrder,
+                            s.logicalPosition,
+                            s.revisionSeq
+                        ).copy(supersedesId = targetEventId.raw)
+                    },
+                    now = committedAt
+                )
+                // 修订会改变历史事实，状态必须跟着重算（RT-004）
+                recomputeProjectionLocked(matchId)
+                AppendResult(
+                    matchId = matchId,
+                    eventId = replacement.eventId,
+                    occurredOrder = slot.occurredOrder,
+                    issues = issues
+                )
+            }
+        } catch (conflict: RevisionConflictException) {
+            // 并发冲突要变成**可理解的错误返回值**，不要把异常抛到 UI
+            android.util.Log.w(DB_LOG_TAG, "修订冲突：${conflict.message}")
+            failed(matchId, RepositoryError.INVALID_SUPERSEDE_TARGET)
+        } catch (rollback: IllegalStateException) {
+            // reviseWithSlot 内部的 check 失败（撤销命中 0 行）也会走到这里
+            android.util.Log.w(DB_LOG_TAG, "修订被回滚：${rollback.message}")
+            failed(matchId, RepositoryError.INVALID_SUPERSEDE_TARGET)
         }
     }
 
