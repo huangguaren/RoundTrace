@@ -138,20 +138,25 @@ class ReplayViewModel(
             requestedMode
         }
 
-        val snapshot = runCatching {
-            knowledgeProvider.snapshot(match, observer, at, effectiveMode)
-        }.getOrElse { throwable ->
-            return ReplayUiState(
-                isLoading = false,
-                matchTitle = bundle.summary.title,
-                playerCount = bundle.config.playerCount,
-                at = at,
-                latestOrder = latestOrder,
-                mode = Perspective.PUBLIC,
-                observerSeat = observer,
-                canOpenGodView = probe.canOpenGodView,
-                errorMessage = throwable.message ?: "视角计算失败"
-            )
+        // NX-03：PUBLIC 视角直接复用 probe，不重复算 snapshot
+        val snapshot = if (effectiveMode == Perspective.PUBLIC) {
+            probe
+        } else {
+            runCatching {
+                knowledgeProvider.snapshot(match, observer, at, effectiveMode)
+            }.getOrElse { throwable ->
+                return ReplayUiState(
+                    isLoading = false,
+                    matchTitle = bundle.summary.title,
+                    playerCount = bundle.config.playerCount,
+                    at = at,
+                    latestOrder = latestOrder,
+                    mode = Perspective.PUBLIC,
+                    observerSeat = observer,
+                    canOpenGodView = probe.canOpenGodView,
+                    errorMessage = throwable.message ?: "视角计算失败"
+                )
+            }
         }
 
         val findings = runCatching {

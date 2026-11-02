@@ -163,33 +163,43 @@ class AvalonEvidenceAnalyzer(
         }
 
         // —— 任务结果 ——
+        // NX-01 阶段 A：每个任务先求值一次「证据前提」（MissionEvidencePremise），
+        // A03/A04/A06/A07/A12 按前提决定是否触发与用哪段文案，
+        // 避免文案越权、与 B34 计数口径矛盾、冲突记录给出互相矛盾的结论。
         effectiveHistory.filterIsInstance<MissionResolved>().forEach { mission ->
             val questNo = mission.questNo
-            val failCount = mission.failCount
-            val threshold = rules.failThreshold(snapshot.playerCount, questNo)
+            val premise = missionEvidencePremise(mission, snapshot.playerCount, rules)
+            val threshold = premise.threshold
 
-            // A03：任务门槛
-            if (failCount != null && snapshot.playerCount > 0) {
+            // A03：任务门槛。
+            // 触发条件从「failCount 已记录」放宽为「任务层面有任何已记录信息」——
+            // 「结果为成功但牌数未知」恰恰是最需要解释门槛的场景（8 人局第 4 任务
+            // 门槛 2，出现 1 张失败牌仍成功）。
+            if ((premise.failCountKnown || premise.outcomeKnown) && snapshot.playerCount > 0) {
                 findings += EvidenceFinding(
                     id = "A03-$questNo",
                     label = "第 $questNo 任务需 ≥$threshold 张失败牌",
                     level = EvidenceLevel.RULE_CERTAIN,
                     explanation = "7–10 人局的第 4 个任务门槛为 2，其余任务门槛为 1" +
-                        "（当前 ${snapshot.playerCount} 人局第 $questNo 任务门槛 = $threshold）。",
+                        "（当前 ${snapshot.playerCount} 人局第 $questNo 任务门槛 = $threshold）。" +
+                        a03ThresholdClarification(premise),
                     ruleId = RULE_A03,
                     sourceEventIds = listOf(mission.eventId),
                     relatedQuestNo = questNo
                 )
             }
 
-            // A06：f 张失败牌 → 队伍内至少 f 名坏人
-            if (failCount != null && failCount > 0) {
+            // A06：f 张失败牌 → 队伍内至少 f 名坏人。
+            // 座位名单畸形（越界/重复）时抑制——「这支队伍」的名单本身不可信（A12-team 会说明）。
+            if (premise.failCountKnown && (premise.failCount ?: 0) > 0 && !premise.seatsMalformed) {
+                val fail = premise.failCount ?: 0
                 findings += EvidenceFinding(
                     id = "A06-$questNo",
-                    label = "该队伍内至少有 $failCount 名坏人",
+                    label = "该队伍内至少有 $fail 名坏人",
                     level = EvidenceLevel.RULE_CERTAIN,
                     explanation = "只有坏人能出失败牌（好人只能出成功牌），" +
-                        "出现 $failCount 张失败牌说明至少有 $failCount 名坏人在这支队伍里。",
+                        "出现 $fail 张失败牌说明至少有 $fail 名坏人在这支队伍里。" +
+                        conflictCaveat(premise),
                     ruleId = RULE_A06,
                     sourceEventIds = listOf(mission.eventId),
                     relatedSeats = mission.teamSeats ?: emptyList(),
@@ -198,8 +208,14 @@ class AvalonEvidenceAnalyzer(
             }
 
             // A07：无法定位具体是谁出的失败牌（纠错类，必出现）
-            if (failCount != null && failCount > 0) {
+            if (premise.failCountKnown && (premise.failCount ?: 0) > 0) {
                 val team = mission.teamSeats
+                val teamNote = when {
+                    premise.seatsMalformed ->
+                        "（且记录的队伍座位名单存在越界或重复，名单仅供参考）"
+                    team == null -> "（且队伍成员未记录完整，信息不足）"
+                    else -> ""
+                }
                 findings += EvidenceFinding(
                     id = "A07-$questNo",
                     label = "无法确定具体是谁出的失败牌",
@@ -208,7 +224,7 @@ class AvalonEvidenceAnalyzer(
                         "失败牌可能来自队伍中任一" +
                         (team?.let { "${it.size} 人中的任何一位" } ?: "身份未定者") +
                         "，不能锁定某一位。" +
-                        (if (team == null) "（且队伍成员未记录完整，信息不足）" else ""),
+                        teamNote,
                     ruleId = RULE_A07,
                     sourceEventIds = listOf(mission.eventId),
                     relatedSeats = team ?: emptyList(),
@@ -216,16 +232,17 @@ class AvalonEvidenceAnalyzer(
                 )
             }
 
-            // A04：任务成功不能推出队员全好（纠错类，必出现）
-            if (mission.observedOutcome == MissionOutcome.SUCCESS ||
-                (failCount != null && failCount == 0)
-            ) {
+            // A04：任务成功不能推出队员全好（纠错类，必出现）。
+            // 文案按前提分支：牌数已知为 0 / 牌数未记录 / 牌数与结果冲突，
+            // 绝不在「牌数未记录」时断言「失败牌为 0」。
+            val successObserved = premise.observedOutcome == MissionOutcome.SUCCESS
+            val zeroFail = premise.failCountKnown && premise.failCount == 0
+            if (successObserved || zeroFail) {
                 findings += EvidenceFinding(
                     id = "A04-$questNo",
                     label = "任务成功不等于队员都是好人",
                     level = EvidenceLevel.RULE_CERTAIN,
-                    explanation = "坏人可以选择出成功牌来伪装。" +
-                        "第 $questNo 任务成功只能说明失败牌为 0，不能把队伍成员标记为已证实好人。",
+                    explanation = a04Explanation(premise),
                     ruleId = RULE_A04,
                     sourceEventIds = listOf(mission.eventId),
                     relatedSeats = mission.teamSeats ?: emptyList(),
@@ -233,26 +250,70 @@ class AvalonEvidenceAnalyzer(
                 )
             }
 
-            // A12：数据残缺
-            if (failCount == null) {
+            // A12：数据残缺（失败牌数 / 队伍名单 / 记录冲突）
+            if (!premise.failCountKnown) {
+                val explanation = if (premise.observedOutcome != null) {
+                    // 结果已记录：成败以观察结果为准，缺的只是牌数与下界推导
+                    "失败牌数未记录，成败以记录的观察结果为准" +
+                        "（本任务记录为${outcomeLabel(premise.observedOutcome)}）。" +
+                        "缺少失败牌数使队伍内坏人数量的下界无法推导，" +
+                        "也无法核对记录结果与门槛是否一致。"
+                } else {
+                    "缺少失败牌数，无法判断该任务成败，也无法推导队伍内坏人的下界。" +
+                        "结论暂不可用（不是「任务成功」，也不是「任务失败」）。"
+                }
                 findings += EvidenceFinding(
                     id = "A12-fail-$questNo",
                     label = "第 $questNo 任务的失败牌数未记录",
                     level = EvidenceLevel.UNKNOWN,
-                    explanation = "缺少失败牌数，无法判断该任务成败，也无法推导队伍内坏人的下界。" +
-                        "结论暂不可用（不是「任务成功」，也不是「任务失败」）。",
+                    explanation = explanation,
                     ruleId = RULE_A12,
                     sourceEventIds = listOf(mission.eventId),
                     relatedQuestNo = questNo
                 )
             }
-            if (mission.teamSeats == null) {
+            if (premise.seatsMalformed || !premise.teamRecorded || !premise.teamSizeMatchesExpected) {
+                val label = when {
+                    premise.seatsMalformed -> "第 $questNo 任务的队伍座位记录异常"
+                    !premise.teamRecorded -> "第 $questNo 任务的队伍成员未记录"
+                    else -> "第 $questNo 任务的队伍成员记录不完整"
+                }
+                val explanation = when {
+                    premise.seatsMalformed ->
+                        "队伍座位名单存在越界或重复（合法座位应为 1..${snapshot.playerCount} " +
+                            "的不重复编号）。依赖这份名单的推论（如「队伍内至少 f 名坏人」）" +
+                            "已被抑制。任务结果本身仍是现场事实，予以保留；只要结果明确，" +
+                            "任务仍计入好人/坏人的胜负计数。"
+                    !premise.teamRecorded ->
+                        "队员不完整时，「谁在这支队伍里」的推论不可靠。" +
+                            "任务结果本身不受影响：只要结果明确，任务仍计入好人/坏人的胜负计数，" +
+                            "不以队员完整性为前提（B34：结果明确即计数）。"
+                    else ->
+                        "记录了 ${mission.teamSeats?.size ?: 0} 名队员，" +
+                            "与本任务期望的 ${premise.expectedTeamSize} 名不符。" +
+                            "「谁在这支队伍里」的推论不可靠。任务结果本身不受影响：" +
+                            "只要结果明确，任务仍计入好人/坏人的胜负计数（B34）。"
+                }
                 findings += EvidenceFinding(
                     id = "A12-team-$questNo",
-                    label = "第 $questNo 任务的队伍成员未记录完整",
+                    label = label,
                     level = EvidenceLevel.UNKNOWN,
-                    explanation = "队员不完整时，任何「谁在这支队伍里」的推论都不可靠；" +
-                        "本任务不参与好人/坏人计数。",
+                    explanation = explanation,
+                    ruleId = RULE_A12,
+                    sourceEventIds = listOf(mission.eventId),
+                    relatedQuestNo = questNo
+                )
+            }
+            if (premise.outcomeFailConflict) {
+                findings += EvidenceFinding(
+                    id = "A12-conflict-$questNo",
+                    label = "第 $questNo 任务失败牌数与记录结果冲突",
+                    level = EvidenceLevel.UNKNOWN,
+                    explanation = "按失败牌数（${premise.failCount}、门槛 $threshold）推导任务应为" +
+                        "${outcomeLabel(premise.derivedOutcome)}，但记录的观察结果为" +
+                        "${outcomeLabel(premise.observedOutcome)}，两者必有一个记录有误。" +
+                        "相关推论已附带冲突提示，请人工核对后再采信；" +
+                        "任务胜负计数仍按推导结果推进（B34：结果明确即计数）。",
                     ruleId = RULE_A12,
                     sourceEventIds = listOf(mission.eventId),
                     relatedQuestNo = questNo
@@ -332,6 +393,70 @@ class AvalonEvidenceAnalyzer(
 
             else -> EvidenceLevel.INFERENCE
         }
+
+    /**
+     * A03 的补充说明：结果记录为成功而失败牌数未记录时，
+     * 按门槛解释「成功」的确切含义（未达门槛 ≠ 失败牌为 0）。
+     */
+    private fun a03ThresholdClarification(premise: MissionEvidencePremise): String {
+        if (premise.failCountKnown || premise.observedOutcome != MissionOutcome.SUCCESS) return ""
+        return if (premise.threshold >= 2) {
+            "本任务记录为成功而失败牌数未记录：成功只说明失败牌未达门槛 ${premise.threshold}" +
+                "（出现 ${premise.threshold - 1} 张失败牌仍算成功），不能断定没有失败牌。"
+        } else {
+            "本任务记录为成功而失败牌数未记录：成功只说明失败牌未达门槛 ${premise.threshold}，" +
+                "不能断定没有失败牌。"
+        }
+    }
+
+    /**
+     * A04 的解释文案，按证据前提分支（绝不越权断言未知信息）：
+     * 1. 冲突：牌数与记录结果矛盾 → 指出冲突、要求人工核对，两个口径都不采信；
+     * 2. 牌数已知为 0 → 保留原语义「任务成功只能说明失败牌为 0」；
+     * 3. 牌数未记录但结果为成功 → 只说「失败牌未达门槛」，不说「失败牌为 0」。
+     */
+    private fun a04Explanation(premise: MissionEvidencePremise): String {
+        val questNo = premise.questNo
+        return when {
+            premise.outcomeFailConflict -> {
+                if ((premise.failCount ?: 0) > 0) {
+                    "第 $questNo 任务记录为成功，但失败牌数（${premise.failCount}）按门槛 " +
+                        "${premise.threshold} 推导应为失败，两者冲突——必有一个记录有误，需人工核对。" +
+                        "若以失败牌数为准，这支队伍里存在出过失败牌的坏人，" +
+                        "更不能把队伍成员标记为已证实好人。"
+                } else {
+                    "第 $questNo 任务失败牌数为 0，但记录的任务结果为失败，两者冲突——" +
+                        "必有一个记录有误，需人工核对。" +
+                        "无论以哪个口径为准，都不能把队伍成员标记为已证实好人。"
+                }
+            }
+            premise.failCountKnown && premise.failCount == 0 ->
+                "坏人可以选择出成功牌来伪装。" +
+                    "第 $questNo 任务成功只能说明失败牌为 0，不能把队伍成员标记为已证实好人。"
+            else ->
+                "坏人可以选择出成功牌来伪装。第 $questNo 任务记录为成功而失败牌数未记录：" +
+                    "成功只说明失败牌未达门槛 ${premise.threshold}，并非没有失败牌，" +
+                    "不能把队伍成员标记为已证实好人。"
+        }
+    }
+
+    /**
+     * A06 的冲突附注：失败牌数与记录结果冲突时，保留「至少 f 名坏人」的规则下界
+     * （失败牌数本身是独立观察），但必须提示两个记录必有一误。
+     */
+    private fun conflictCaveat(premise: MissionEvidencePremise): String {
+        if (!premise.outcomeFailConflict) return ""
+        return "注意：该失败牌数（${premise.failCount}）与记录的任务结果" +
+            "（${outcomeLabel(premise.observedOutcome)}）冲突，两者必有一个记录有误；" +
+            "推论暂按失败牌数给出，需人工核对后再采信。"
+    }
+
+    /** 任务结果的中文标签（供拼接文案；null 视为未知）。 */
+    private fun outcomeLabel(outcome: MissionOutcome?): String = when (outcome) {
+        MissionOutcome.SUCCESS -> "成功"
+        MissionOutcome.FAILED -> "失败"
+        else -> "未知"
+    }
 
     private fun roleLabel(role: RoleId?): String = when (role) {
         RoleId.MERLIN -> "梅林"

@@ -153,6 +153,12 @@ sealed interface RecordCommitResult {
  * **全部字段都由 `observeBundle → ReplayEngine.replay` 派生**（T44④）：
  * ViewModel 不重复计算票数、门槛、成败——那些是 `AvalonRules` 的唯一职责。
  */
+/** NX-06：修改早期事件后，后续受影响记录的提示 */
+data class ImpactWarning(
+    val title: String,
+    val affectedItems: List<String>
+)
+
 data class RecordUiState(
     val isLoading: Boolean = true,
     val match: MatchSummary? = null,
@@ -210,6 +216,10 @@ data class RecordUiState(
      * 拿它禁用提交按钮会让用户在草稿保存的那几百毫秒里点不动确认。
      */
     val commitInFlight: Boolean = false,
+    /** NX-06：正在编辑第 N 任务（导航式，不删除数据）；null = 正常记录模式 */
+    val editingQuest: Int? = null,
+    /** NX-06：修改早期事件后，后续受影响记录的提示；用户确认后才关闭 */
+    val impactWarning: ImpactWarning? = null,
     val errorMessage: String? = null
 ) {
 
@@ -304,4 +314,10 @@ sealed interface RecordAction {
 
     /** UI 消费完 [RecordUiState.commitResult] 后清空（关弹窗/保留弹窗的分支也在 UI）。 */
     data object AcknowledgeCommit : RecordAction
+
+    /** NX-06：进入/退出"编辑第 N 任务"模式（不删除数据，只导航） */
+    data class SetEditingQuest(val questNo: Int?) : RecordAction
+
+    /** NX-06：确认影响提示，退出编辑模式 */
+    data object AcknowledgeImpactWarning : RecordAction
 }

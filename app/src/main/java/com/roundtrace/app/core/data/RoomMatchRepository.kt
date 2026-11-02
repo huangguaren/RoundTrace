@@ -112,6 +112,22 @@ class RoomMatchRepository(
         )
     }
 
+    /**
+     * NX-02：在事务内读完整 bundle。
+     *
+     * 必须在 `database.withTransaction { ... }` 块内调用——四表读在同一事务内，
+     * 避免「matches 读到新版本、events 读到旧版本」的撕裂读。
+     */
+    private suspend fun readBundleLocked(matchId: MatchId): MatchBundle? {
+        val matchEntity = matchDao.findById(matchId.raw) ?: return null
+        return buildBundle(
+            matchEntity = matchEntity,
+            participants = participantDao.listByMatch(matchId.raw),
+            roles = roleDao.listByMatch(matchId.raw),
+            eventEntities = eventDao.listActive(matchId.raw)
+        )
+    }
+
     // ————————————————————————————————————————————————————————
     // 创建
     // ————————————————————————————————————————————————————————
@@ -162,16 +178,18 @@ class RoomMatchRepository(
     // ————————————————————————————————————————————————————————
 
     override suspend fun appendEvent(matchId: MatchId, event: MatchEvent): AppendResult {
-        val bundle = getBundle(matchId)
-            ?: return failed(matchId, RepositoryError.NOT_FOUND)
-
-        val rules = gameRulesRegistry.rulesFor(bundle.config)
-        val state = ReplayEngine(reducer).replay(bundle.toReconstructedMatch()).state
-        val issues = rules.validateEvent(state, event)
-
         val committedAt = now
         return database.withTransaction {
-            // §9.3-18：首次提交某任务的提案时自动补建 QUEST_STARTED（同事务）
+            // NX-02：事务内读快照，关闭「读 bundle→校验→写」窗口的并发竞态
+            val bundle = readBundleLocked(matchId)
+                ?: return@withTransaction failed(matchId, RepositoryError.NOT_FOUND)
+
+            val rules = gameRulesRegistry.rulesFor(bundle.config)
+            val state = ReplayEngine(reducer).replay(bundle.toReconstructedMatch()).state
+            val issues = rules.validateEvent(state, event)
+
+            // §9.3-18：首次提交某任务的提案时自动补建 QUEST_STARTED
+            // NX-02：在事务内复核（而非用事务外 bundle），关闭并发双补建
             if (event is TeamProposed && !hasQuestStarted(bundle.events, event.questNo)) {
                 val auto = com.roundtrace.app.core.model.QuestStarted(
                     eventId = EventId(idGenerator.newId()),

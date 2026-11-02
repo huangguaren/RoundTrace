@@ -90,6 +90,12 @@ class RecordViewModel(
     /** [isCommitting] 的 UI 投影：只用于禁用提交按钮，不参与任何并发判断。 */
     private val commitInFlightFlow = MutableStateFlow(false)
 
+    /** NX-06：正在编辑第 N 任务（导航式，不删除数据） */
+    private val editingQuestFlow = MutableStateFlow<Int?>(null)
+
+    /** NX-06：修改早期事件后的影响提示 */
+    private val impactWarningFlow = MutableStateFlow<ImpactWarning?>(null)
+
     private var draftSaveJob: Job? = null
 
     /**
@@ -112,7 +118,9 @@ class RecordViewModel(
             editSessionFlow,
             commitResultFlow,
             editInvalidatedFlow,
-            commitInFlightFlow
+            commitInFlightFlow,
+            editingQuestFlow,
+            impactWarningFlow
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             buildUiState(
@@ -123,7 +131,9 @@ class RecordViewModel(
                 editSession = values[4] as EditSession?,
                 commitResult = values[5] as RecordCommitResult?,
                 editTargetInvalidated = values[6] as Boolean,
-                commitInFlight = values[7] as Boolean
+                commitInFlight = values[7] as Boolean,
+                editingQuest = values[8] as Int?,
+                impactWarning = values[9] as ImpactWarning?
             )
         }
             .catch { throwable ->
@@ -241,6 +251,11 @@ class RecordViewModel(
             is RecordAction.UpdateParticipants -> updateParticipants(action.participants)
 
             is RecordAction.RollbackToQuest -> rollbackToQuest(action.questNo)
+            is RecordAction.SetEditingQuest -> editingQuestFlow.value = action.questNo
+            is RecordAction.AcknowledgeImpactWarning -> {
+                impactWarningFlow.value = null
+                editingQuestFlow.value = null
+            }
 
             RecordAction.ClearUndoFeedback -> undoFeedbackFlow.value = null
 
@@ -532,6 +547,28 @@ class RecordViewModel(
                 editSessionFlow.value = null
                 editInvalidatedFlow.value = false
 
+                // NX-06：编辑模式下修改早期事件后，提示后续受影响的记录
+                if (editingQuestFlow.value != null && editTargetEventId != null) {
+                    val warning = when (event) {
+                        is com.roundtrace.app.core.model.MissionResolved -> ImpactWarning(
+                            title = "修改任务结果的影响",
+                            affectedItems = listOf(
+                                "后续所有任务的胜负计数已自动重算",
+                                "如需调整后续记录，请继续在时间线中编辑"
+                            )
+                        )
+                        is com.roundtrace.app.core.model.TeamProposed -> ImpactWarning(
+                            title = "修改提案的影响",
+                            affectedItems = listOf(
+                                "该任务的投票结果已自动重算",
+                                "如需修改投票或任务结果，请继续在时间线中编辑"
+                            )
+                        )
+                        else -> null
+                    }
+                    impactWarningFlow.value = warning
+                }
+
                 // 事件已落库 → 清空本轮表单内容；任务开始事件不保留队长（新任务重选）
                 val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
                 draftFlow.value = ProposalDraft(
@@ -707,7 +744,9 @@ class RecordViewModel(
         editSession: EditSession? = null,
         commitResult: RecordCommitResult? = null,
         editTargetInvalidated: Boolean = false,
-        commitInFlight: Boolean = false
+        commitInFlight: Boolean = false,
+        editingQuest: Int? = null,
+        impactWarning: ImpactWarning? = null
     ): RecordUiState {
         if (bundle == null) {
             return RecordUiState(isLoading = false, errorMessage = "对局不存在或已被删除")
@@ -837,6 +876,8 @@ class RecordViewModel(
             commitResult = commitResult,
             editTargetInvalidated = editTargetInvalidated,
             commitInFlight = commitInFlight,
+            editingQuest = editingQuest,
+            impactWarning = impactWarning,
             errorMessage = null
         )
     }

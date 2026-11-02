@@ -219,6 +219,59 @@ class AvalonReducerReplayTest {
         assertNotNull("R14 事件 id 不应为空", target.eventId.raw)
     }
 
+    /**
+     * B34 回归护栏（NX-01 阶段 A）：任务结果明确即计数，**不得**用
+     * `verified` / 队伍完整性重新设置计数闸门。
+     *
+     * 场景：任务 1 与任务 2 的队伍成员（teamSeats）完全未记录，
+     * 但观察结果分别记录为成功 / 失败 → 计数必须照常推进；
+     * `verified` 仅表示可复核性，应为 false。
+     */
+    @Test
+    fun `B34 队伍未记录但结果明确时计数保持不变`() {
+        val builder = MatchBuilder.eightPlayerMerlinMordred()
+        // 任务 1：队伍未记录，结果观察为成功 → goodSuccessCount 应 +1
+        builder.questCycle(
+            questNo = 1,
+            leaderSeat = 1,
+            teamSeats = listOf(1, 2, 3),
+            failCount = null,
+            observedOutcome = com.roundtrace.app.core.model.MissionOutcome.SUCCESS,
+            missionTeamSeats = null
+        )
+        // 任务 2：队伍未记录，结果观察为失败 → evilFailureCount 应 +1
+        builder.questCycle(
+            questNo = 2,
+            leaderSeat = 2,
+            teamSeats = listOf(2, 3, 4, 6),
+            failCount = null,
+            observedOutcome = com.roundtrace.app.core.model.MissionOutcome.FAILED,
+            missionTeamSeats = null
+        )
+
+        val state = builder.replay()
+
+        assertEquals(
+            "B34：teamSeats=null 但 observedOutcome=SUCCESS，成功必须计数",
+            1,
+            state.goodSuccessCount
+        )
+        assertEquals(
+            "B34：teamSeats=null 但 observedOutcome=FAILED，失败必须计数",
+            1,
+            state.evilFailureCount
+        )
+        assertEquals(
+            "B34：任务 1 的结算结果应为成功（以观察结果为准）",
+            com.roundtrace.app.core.model.MissionOutcome.SUCCESS,
+            state.quests.first { it.questNo == 1 }.outcome
+        )
+        assertFalse(
+            "B34：verified 只表示可复核性——队伍未记录应保持未核实",
+            state.quests.first { it.questNo == 1 }.verified
+        )
+    }
+
     /** 小工具：避免测试里重复写 contains 逻辑（不作为生产代码）。 */
     private object EventRevisionChainHelper {
         fun isPresent(

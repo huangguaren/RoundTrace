@@ -636,7 +636,22 @@ private fun SeatLayoutStep(
                                     offsetY = sy
                                     val col = ((sx - padding) / (cellW + gap)).toInt()
                                     val row = ((sy - padding) / (cellH + gap)).toInt()
-                                    onSeatPositionChange(seat, col / (cols - 1).toFloat(), row / (rows - 1).toFloat())
+                                    val targetX = col / (cols - 1).toFloat()
+                                    val targetY = row / (rows - 1).toFloat()
+                                    // 互换逻辑：目标格子已被其他座位占用时，两个座位交换位置
+                                    val savedPos = saved ?: Pair(0f, 0f)
+                                    val currentCol = ((savedPos.first * (cols - 1) + 0.5f)).toInt()
+                                    val currentRow = ((savedPos.second * (rows - 1) + 0.5f)).toInt()
+                                    val occupant = seatPositions.entries.firstOrNull { (s, pos) ->
+                                        if (s == seat) return@firstOrNull false
+                                        val otherCol = ((pos.first * (cols - 1) + 0.5f)).toInt()
+                                        val otherRow = ((pos.second * (rows - 1) + 0.5f)).toInt()
+                                        otherCol == col && otherRow == row
+                                    }?.key
+                                    if (occupant != null) {
+                                        onSeatPositionChange(occupant, currentCol / (cols - 1).toFloat(), currentRow / (rows - 1).toFloat())
+                                    }
+                                    onSeatPositionChange(seat, targetX, targetY)
                                 }
                             ) { change, drag ->
                                 change.consume()

@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -167,6 +168,29 @@ fun RecordScreen(
                     return@Box
                 }
 
+                // NX-06：编辑模式横幅
+                state.editingQuest?.let { editingQuestNo ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = Dimens.Spacing16, vertical = Dimens.Spacing8),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "正在编辑：第 $editingQuestNo 任务（所有数据保留，点时间线条目修改）",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            TextButton(onClick = { onAction(RecordAction.SetEditingQuest(null)) }) {
+                                Text("完成", color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
@@ -194,7 +218,9 @@ fun RecordScreen(
                             outcomes = quest.slots,
                             currentQuestNo = quest.questNo,
                             onQuestClick = { clicked ->
-                                if (clicked < quest.questNo) showRollbackConfirm = clicked
+                                if (clicked < quest.questNo) {
+                                    onAction(RecordAction.SetEditingQuest(clicked))
+                                }
                             }
                         )
                     }
@@ -390,23 +416,42 @@ fun RecordScreen(
                 if (showRollbackConfirm > 0) {
                     androidx.compose.material3.AlertDialog(
                         onDismissRequest = { showRollbackConfirm = 0 },
-                        title = { Text("回到第 ${showRollbackConfirm} 任务？") },
+                        title = { Text("回到第 ${showRollbackConfirm} 任务编辑？") },
                         text = {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("回滚后：")
-                                Text("• 第 ${showRollbackConfirm + 1} 任务及之后的提案、投票、任务牌记录将被删除", style = MaterialTheme.typography.bodySmall)
-                                Text("• 第 ${showRollbackConfirm} 任务的记录保留，可直接修改", style = MaterialTheme.typography.bodySmall)
-                                Text("• 如果只是查看不修改，点取消即可", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("操作说明：")
+                                Text("• 所有已记录的数据都会保留，不会被删除", style = MaterialTheme.typography.bodySmall)
+                                Text("• 在下方时间线里直接点击要修改的条目即可编辑", style = MaterialTheme.typography.bodySmall)
+                                Text("• 修改后，相关的后续记录会自动更新", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         },
                         confirmButton = {
                             TextButton(onClick = {
-                                onAction(RecordAction.RollbackToQuest(showRollbackConfirm))
                                 showRollbackConfirm = 0
-                            }) { Text("回滚", color = MaterialTheme.colorScheme.error) }
+                            }) { Text("去编辑", color = MaterialTheme.colorScheme.primary) }
                         },
                         dismissButton = {
                             TextButton(onClick = { showRollbackConfirm = 0 }) { Text("取消") }
+                        }
+                    )
+                }
+
+                // NX-06：修改后的影响提示
+                state.impactWarning?.let { warning ->
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { onAction(RecordAction.AcknowledgeImpactWarning) },
+                        title = { Text(warning.title) },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                warning.affectedItems.forEach { item ->
+                                    Text("• $item", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { onAction(RecordAction.AcknowledgeImpactWarning) }) {
+                                Text("知道了", color = MaterialTheme.colorScheme.primary)
+                            }
                         }
                     )
                 }

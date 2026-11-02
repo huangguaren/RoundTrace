@@ -34,23 +34,24 @@ class HomeViewModel(
     /** 重试触发器：`retry()` 让整个查询链重新订阅。 */
     private val retryTrigger = MutableStateFlow(0)
 
-    private val loading = MutableStateFlow(true)
     private val errorMessage = MutableStateFlow<String?>(null)
 
     val uiState: StateFlow<HomeUiState>
 
     init {
+        // NX-03：单一查询流，不再额外 collect 来关 loading
         val summaries = combine(filterState, retryTrigger) { filter, _ -> filter }
-            .flatMapLatest { filter -> repository.observeSummaries(filter.toStatusFilter()) }
+            .flatMapLatest { filter ->
+                repository.observeSummaries(filter.toStatusFilter())
+            }
 
         uiState = combine(
             summaries,
             filterState,
-            loading,
             errorMessage
-        ) { items, filter, isLoading, error ->
+        ) { items, filter, error ->
             HomeUiState(
-                isLoading = isLoading && items.isEmpty(),
+                isLoading = false,
                 items = items.map { it.toHomeItem() },
                 errorMessage = error,
                 filter = filter
@@ -71,14 +72,6 @@ class HomeViewModel(
                 started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS),
                 initialValue = HomeUiState(isLoading = true)
             )
-
-        // 首个数据集到达后关闭 loading
-        viewModelScope.launch {
-            summaries.collect {
-                loading.value = false
-                errorMessage.value = null
-            }
-        }
     }
 
     fun onFilterChange(filter: HomeFilter) {
@@ -87,7 +80,6 @@ class HomeViewModel(
 
     /** 错误态重试：重新订阅查询链。 */
     fun retry() {
-        loading.value = true
         errorMessage.value = null
         retryTrigger.value += 1
     }

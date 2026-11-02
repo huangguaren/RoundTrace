@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -206,7 +207,7 @@ private fun VoteSeatCell(
     Surface(
         onClick = onClick,
         modifier = modifier
-            .heightIn(min = Dimens.SeatMinSize)
+            .aspectRatio(1f)
             .semantics {
                 contentDescription = description
                 role = Role.Button
