@@ -517,6 +517,10 @@ class RecordViewModel(
      * 3. 成功后才清草稿、退出编辑态、发 `Succeeded`（UI 据此关弹窗）。
      */
     private fun commit(event: MatchEvent, editTargetEventId: EventId?) {
+        // NX-06：历史浏览模式下禁止新增事件（只能编辑现有条目）
+        if (editingQuestFlow.value != null && editTargetEventId == null) {
+            return
+        }
         // 防重复提交：判据是「有一次提交在飞」，**不是** saveStatus。
         // 若看 saveStatus，草稿自动保存的 SAVING 窗口会把这次提交直接吞掉（F1）。
         if (isCommitting) return
