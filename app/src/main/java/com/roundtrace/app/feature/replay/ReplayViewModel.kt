@@ -159,14 +159,14 @@ class ReplayViewModel(
             }
         }
 
+        // NX-03：直接用已算好的 snapshot，不再让 analyzeAt 内部重复创建快照
         val findings = runCatching {
-            analyzer.analyzeAt(
-                match = match,
-                observer = observer,
-                at = at,
+            val visibleHistory = com.roundtrace.app.core.replay.VisibleEventPolicy.forPerspective(
+                events = bundle.events,
                 mode = effectiveMode,
-                knowledgeProvider = knowledgeProvider
-            )
+                observerSeat = observer
+            ).filter { it.occurredOrder <= at.occurredOrder }
+            analyzer.analyze(snapshot, visibleHistory)
         }.getOrDefault(emptyList())
 
         return ReplayUiState(
