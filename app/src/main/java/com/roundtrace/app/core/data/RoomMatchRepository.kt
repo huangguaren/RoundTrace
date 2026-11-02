@@ -431,6 +431,26 @@ class RoomMatchRepository(
     }
 
     // ————————————————————————————————————————————————————————
+    // 一次性投影刷新（RT-003 Step 3）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 逐局重算 `matches.status`，复用 [recomputeProjectionLocked] 的重放逻辑。
+     *
+     * 刻意**不分事务包住所有对局**：单局失败不应让整批回滚（否则永远刷不完）。
+     * 调用方（`AppContainer`）在全部成功后才写版本标记，失败则下次启动重试。
+     */
+    override suspend fun recomputeAllProjections(): Int {
+        val ids = matchDao.listAllIds()
+        var processed = 0
+        ids.forEach { rawId ->
+            runCatching { recomputeProjectionLocked(MatchId(rawId), touchUpdatedAt = false) }
+                .onSuccess { processed++ }
+        }
+        return processed
+    }
+
+    // ————————————————————————————————————————————————————————
     // 内部工具
     // ————————————————————————————————————————————————————————
 
@@ -447,10 +467,18 @@ class RoomMatchRepository(
      * - 必须用 `updateStatusOnly`，**不得**写 `revealedAt`
      *   （否则会把已揭晓的对局打回未揭晓 —— RT-001 的老问题）。
      */
-    private suspend fun recomputeProjectionLocked(matchId: MatchId) {
+    private suspend fun recomputeProjectionLocked(
+        matchId: MatchId,
+        touchUpdatedAt: Boolean = true
+    ) {
         val bundle = getBundle(matchId) ?: return
         val derived = ReplayEngine(reducer).replay(bundle.toReconstructedMatch()).state.status
-        matchDao.updateStatusOnly(matchId.raw, derived.name, now)
+        if (touchUpdatedAt) {
+            matchDao.updateStatusOnly(matchId.raw, derived.name, now)
+        } else {
+            // 一次性刷新：只改结论，**不碰 updatedAt**，否则老对局会全部跳到首页顶部
+            matchDao.updateStatusKeepTimestamp(matchId.raw, derived.name)
+        }
     }
 
     private fun failed(matchId: MatchId, error: RepositoryError): AppendResult =

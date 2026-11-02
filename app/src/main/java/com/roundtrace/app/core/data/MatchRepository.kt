@@ -75,6 +75,22 @@ interface MatchRepository {
 
     /** 供导入使用：整场事务写入，**绝不覆盖已有对局**（总是新建 `MatchId`）。 */
     suspend fun importBundle(bundle: ImportBundle): MatchId
+
+    /**
+     * 一次性把所有对局的 `status` 按**当前顺序模型**重算（RT-003 Step 3）。
+     *
+     * 为什么需要：`matches.status` 是写入时算好并冻结的列。读路径切到逻辑位置后，
+     * 同一局重放可能得出不同结论；老对局若不再被写，首页卡（读列）与复盘页（读 replay）
+     * 会长期显示互相矛盾的结论。
+     *
+     * 硬约束：
+     * - **不得改动 `updatedAt`**（否则老对局会全部跳到首页顶部）；
+     * - 逐局复用与写入路径相同的重放逻辑，不另写一套；
+     * - 幂等：重复执行结果相同。
+     *
+     * @return 实际处理的对局数
+     */
+    suspend fun recomputeAllProjections(): Int
 }
 
 /**

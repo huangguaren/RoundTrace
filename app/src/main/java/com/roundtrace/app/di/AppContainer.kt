@@ -17,6 +17,7 @@ import com.roundtrace.app.core.model.EventFactory
 import com.roundtrace.app.core.rules.DefaultGameRulesRegistry
 import com.roundtrace.app.core.rules.GameReducer
 import com.roundtrace.app.core.rules.GameRulesRegistry
+import android.util.Log
 import com.roundtrace.app.core.rules.avalon.AvalonRules
 import com.roundtrace.app.core.util.IdGenerator
 import com.roundtrace.app.core.util.UuidIdGenerator
@@ -24,6 +25,8 @@ import java.time.Clock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * 手动依赖注入容器（ARCHITECTURE §1.3 / TASKS.md T37）。
@@ -35,6 +38,8 @@ import kotlinx.coroutines.SupervisorJob
  *
  * @param appContext Application Context（只用于需要 Context 的基础设施）
  */
+private const val PROJECTION_TAG = "RoundTraceDb"
+
 class AppContainer(appContext: Context) {
 
     private val applicationContext: Context = appContext.applicationContext
@@ -81,6 +86,40 @@ class AppContainer(appContext: Context) {
     /** 设置仓储（DataStore）。 */
     val settingsRepository: SettingsRepository by lazy {
         DataStoreSettingsRepository(applicationContext)
+    }
+
+    /**
+     * RT-003 Step 3 的一次性投影刷新（migration-plan §17.1-S3-5）。
+     *
+     * 读路径切到逻辑位置后，同一局重放可能得出与「写入时冻结的 `matches.status`」不同的结论。
+     * 老对局只要不再被写，首页卡（读列）就会永远显示旧结论，而复盘页（读 replay）显示新结论。
+     *
+     * 三条硬约束：
+     * 1. **在应用级 scope 后台执行**，绝不阻塞启动、绝不在主线程做 IO；
+     * 2. **全部成功后才写版本标记**；任何失败都不写 → 下次启动自动重试（不阻断、不静默放弃）；
+     * 3. 刷新本身不改 `updatedAt`（见 `MatchDao.updateStatusKeepTimestamp`），
+     *    否则所有老对局会突然跳到首页顶部。
+     */
+    init {
+        appScope.launch {
+            runCatching {
+                val version = settingsRepository.projectionOrderModelVersion.first()
+                if (version >= SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION) {
+                    return@runCatching
+                }
+                val processed = matchRepository.recomputeAllProjections()
+                settingsRepository.setProjectionOrderModelVersion(
+                    SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION
+                )
+                Log.i(
+                    PROJECTION_TAG,
+                    "投影顺序模型升级完成：重算 $processed 局（旧版本 $version → " +
+                        "${SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION}）"
+                )
+            }.onFailure { throwable ->
+                Log.w(PROJECTION_TAG, "一次性投影刷新失败（不阻断启动，下次重试）", throwable)
+            }
+        }
     }
 
     /** 视角引擎（M4/T51）：纯函数，无 IO。 */

@@ -188,6 +188,15 @@ class FakeMatchRepository(
 
     override suspend fun importBundle(bundle: ImportBundle): MatchId = matchId
 
+    /** 单局假仓储：按当前事件重算一次 status（对齐生产的 recomputeAllProjections 语义）。 */
+    override suspend fun recomputeAllProjections(): Int {
+        val derived = com.roundtrace.app.core.replay.ReplayEngine(
+            com.roundtrace.app.core.rules.DefaultGameRulesRegistry().avalonReducer
+        ).replay(buildBundle(eventsState.value).toReconstructedMatch()).state.status
+        status = derived
+        return 1
+    }
+
     // ————————————————————————————————————————————————————————
 
     private fun buildBundle(events: List<MatchEvent>): MatchBundle {

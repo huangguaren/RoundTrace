@@ -49,6 +49,20 @@ interface MatchDao {
     )
     suspend fun updateStatusOnly(id: String, status: String, now: Long)
 
+    /**
+     * 只更新 `status`，**连 `updatedAt` 都不碰**。
+     *
+     * 专供 RT-003 Step 3 的一次性投影刷新：那次刷新是「后台把老数据按新顺序重算一遍」，
+     * 若走 [updateStatusOnly] 会把所有老对局的「最近活动时间」刷成现在、打乱首页排序 ——
+     * 用户会看到一堆几个月前的对局突然跳到列表顶部。
+     */
+    @Query("UPDATE matches SET status = :status WHERE id = :id")
+    suspend fun updateStatusKeepTimestamp(id: String, status: String)
+
+    /** 全部对局 id（一次性投影刷新用；按 updatedAt 升序，先刷老数据）。 */
+    @Query("SELECT id FROM matches ORDER BY updatedAt ASC")
+    suspend fun listAllIds(): List<String>
+
     @Query("UPDATE matches SET updatedAt = :now WHERE id = :id")
     suspend fun touch(id: String, now: Long)
 

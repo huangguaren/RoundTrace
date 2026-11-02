@@ -41,6 +41,10 @@ class DataStoreSettingsRepository(
         preferences[KEY_INCLUDE_PRIVATE] ?: SettingsRepository.DEFAULT_INCLUDE_PRIVATE
     }
 
+    override val projectionOrderModelVersion: Flow<Int> = dataStore.data.map { preferences ->
+        preferences[KEY_PROJECTION_ORDER_MODEL_VERSION] ?: 0
+    }
+
     override suspend fun setThemeMode(mode: ThemeMode) {
         dataStore.edit { it[KEY_THEME_MODE] = mode.name }
     }
@@ -53,9 +57,14 @@ class DataStoreSettingsRepository(
         dataStore.edit { it[KEY_INCLUDE_PRIVATE] = include }
     }
 
+    override suspend fun setProjectionOrderModelVersion(version: Int) {
+        dataStore.edit { it[KEY_PROJECTION_ORDER_MODEL_VERSION] = version }
+    }
+
     private companion object {
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
         val KEY_DEFAULT_PLAYER_COUNT = intPreferencesKey("default_player_count")
         val KEY_INCLUDE_PRIVATE = booleanPreferencesKey("include_private_by_default")
+        val KEY_PROJECTION_ORDER_MODEL_VERSION = intPreferencesKey("projection_order_model_version")
     }
 }
