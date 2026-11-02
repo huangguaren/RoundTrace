@@ -28,14 +28,14 @@ import com.roundtrace.app.BuildConfig
 import com.roundtrace.app.R
 import com.roundtrace.app.core.data.ThemeMode
 import com.roundtrace.app.core.export.ShareLauncher
+import com.roundtrace.app.core.export.ImportTextReader
+import com.roundtrace.app.core.export.ImportTextReadResult
 import com.roundtrace.app.core.rules.avalon.AvalonPreset
 import com.roundtrace.app.core.ui.theme.ButtonShape
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.PanelShape
 import com.roundtrace.app.core.ui.theme.PillShape
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * 设置页（TASKS.md T63①）。
@@ -59,14 +59,10 @@ fun SettingsScreen(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val text = withContext(Dispatchers.IO) {
-                    runCatching {
-                        context.contentResolver.openInputStream(uri)?.bufferedReader()
-                            ?.use { it.readText() }
-                    }.getOrNull()
-                }
-                if (text != null) {
-                    onAction(SettingsAction.ImportJson(text))
+                when (val result = ImportTextReader.readDocument { context.contentResolver.openInputStream(uri) }) {
+                    is ImportTextReadResult.Text -> onAction(SettingsAction.ImportJson(result.value))
+                    is ImportTextReadResult.Rejected ->
+                        onAction(SettingsAction.ImportReadFailed(result.reason, result.detail))
                 }
             }
         }
@@ -190,6 +186,11 @@ fun SettingsScreen(
             )
         }
 
+        Text(
+            text = stringResource(R.string.import_avatar_reference_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         if (state.importMessage != null) {
             Text(
                 text = state.importMessage,

@@ -113,7 +113,7 @@ class ExportImportRevisionAuditTest {
         assertTrue("导出应成功", exported is ExportResult.Success)
         val json = (exported as ExportResult.Success).text
 
-        assertTrue("schemaVersion 必须仍为 1", json.contains("\"schemaVersion\": 1"))
+        assertTrue("schemaVersion 必须为当前导出契约版本", json.contains("\"schemaVersion\": ${com.roundtrace.app.core.export.ExportBundle.SCHEMA_VERSION}"))
         assertEquals(
             "导出的事件条数必须等于 active 事件数（历史版本不导出）",
             sourceBundle.events.size,
@@ -183,7 +183,7 @@ class ExportImportRevisionAuditTest {
             ExportOptions(includeSecrets = true, includePrivateNotes = true)
         ) as ExportResult.Success).text)
 
-        val tampered = json.replace("\"schemaVersion\": 1", "\"schemaVersion\": 99")
+        val tampered = json.replace("\"schemaVersion\": ${com.roundtrace.app.core.export.ExportBundle.SCHEMA_VERSION}", "\"schemaVersion\": 99")
         val outcome = service.importFromJson(tampered)
         assertTrue(
             "未知 schemaVersion 必须被拒绝，实际=$outcome",

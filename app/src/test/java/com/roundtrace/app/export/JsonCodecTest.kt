@@ -1,6 +1,7 @@
 package com.roundtrace.app.export
 
 import com.roundtrace.app.core.export.ExportOptions
+import com.roundtrace.app.core.export.ExportBundle
 import com.roundtrace.app.core.export.ImportFailureReason
 import com.roundtrace.app.core.export.ImportResult
 import com.roundtrace.app.core.export.MatchJsonCodec
@@ -112,7 +113,7 @@ class JsonCodecTest {
         assertEquals("{", lines.first())
         assertTrue("首字段必须是 schemaVersion：${lines[1]}", lines[1].trim().startsWith("\"schemaVersion\""))
         assertTrue(text.contains("\"app\": \"RoundTrace\""))
-        assertTrue(text.contains("\"schemaVersion\": 1"))
+        assertTrue(text.contains("\"schemaVersion\": ${ExportBundle.SCHEMA_VERSION}"))
         // 缩进稳定（2 空格）
         assertTrue(lines[1].startsWith("  \""))
     }
@@ -179,7 +180,7 @@ class JsonCodecTest {
     @Test
     fun `unknown schema version is rejected`() {
         val text = codec.encode(ExportFixtures.revealedBundle()).replace(
-            "\"schemaVersion\": 1",
+            "\"schemaVersion\": ${ExportBundle.SCHEMA_VERSION}",
             "\"schemaVersion\": 99"
         )
         val result = codec.decode(text) as ImportResult.Failure

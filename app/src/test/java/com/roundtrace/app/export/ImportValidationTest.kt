@@ -3,6 +3,7 @@ package com.roundtrace.app.export
 import com.roundtrace.app.core.data.MatchBundle
 import com.roundtrace.app.core.export.DefaultImportExportService
 import com.roundtrace.app.core.export.ExportOptions
+import com.roundtrace.app.core.export.ExportBundle
 import com.roundtrace.app.core.export.ExportResult
 import com.roundtrace.app.core.export.ImportFailureReason
 import com.roundtrace.app.core.export.ImportOutcome
@@ -80,7 +81,7 @@ class ImportValidationTest {
     @Test
     fun `unknown schema version is rejected`() = runTest {
         val text = exportText(ExportFixtures.revealedBundle())
-            .replace("\"schemaVersion\": 1", "\"schemaVersion\": 7")
+            .replace("\"schemaVersion\": ${ExportBundle.SCHEMA_VERSION}", "\"schemaVersion\": 7")
         val outcome = serviceFor(ExportFixtures.bundle()).importFromJson(text)
 
         assertTrue(outcome is ImportOutcome.Rejected)
@@ -102,10 +103,11 @@ class ImportValidationTest {
     @Test
     fun `structurally valid but rule violating file is rejected`() = runTest {
         val text = exportText(ExportFixtures.revealedBundle())
-            .replace("\"playerCount\": 8", "\"playerCount\": 4")
+            // 负数角色槽结构上可解析，但必须由规则层给出可诊断的 issue code。
+            .replaceFirst("\"count\": 1", "\"count\": -1")
         val outcome = serviceFor(ExportFixtures.bundle()).importFromJson(text)
 
-        assertTrue("4 人局不是合法阿瓦隆配置，必须拒绝：$outcome", outcome is ImportOutcome.Rejected)
+        assertTrue("负数角色槽必须拒绝：$outcome", outcome is ImportOutcome.Rejected)
         val rejected = outcome as ImportOutcome.Rejected
         assertEquals(ImportFailureReason.RULE_VALIDATION_FAILED, rejected.reason)
         assertTrue("必须给出具体 issue code", rejected.issueCodes.isNotEmpty())

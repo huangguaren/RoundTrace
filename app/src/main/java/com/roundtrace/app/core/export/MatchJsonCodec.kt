@@ -100,7 +100,10 @@ class MatchJsonCodec(
                 roleSlots = config.roleSlots.map { ExportRoleSlot(it.roleId.name, it.count) }
             ),
             participants = filtered.participants.map {
-                ExportParticipant(seat = it.seat, displayName = it.displayName, colorKey = it.colorKey)
+                ExportParticipant(
+                    seat = it.seat, displayName = it.displayName, colorKey = it.colorKey,
+                    layoutX = it.layoutX, layoutY = it.layoutY, avatarUri = it.avatarUri
+                )
             },
             roles = filtered.roleAssignments.entries
                 .sortedBy { it.key }
@@ -244,13 +247,23 @@ class MatchJsonCodec(
      * `MatchRepository.importBundle`（`matchId` 由仓储重新生成，绝不覆盖原对局）。
      */
     fun decode(text: String): ImportResult {
+        try {
+            ImportLimits.checkText(text)
+        } catch (e: ImportLimitException) {
+            return ImportResult.Failure(ImportFailureReason.RESOURCE_LIMIT_EXCEEDED, e.message)
+        }
         val root: JsonElement = try {
             json.parseToJsonElement(text)
         } catch (e: Exception) {
-            return ImportResult.Failure(ImportFailureReason.INVALID_JSON, e.message)
+            return ImportResult.Failure(ImportFailureReason.INVALID_JSON, "文件不是有效的 JSON")
         }
         if (root !is JsonObject) {
             return ImportResult.Failure(ImportFailureReason.INVALID_JSON, "根节点不是 JSON 对象")
+        }
+        try {
+            ImportLimits.checkTree(root)
+        } catch (e: ImportLimitException) {
+            return ImportResult.Failure(ImportFailureReason.RESOURCE_LIMIT_EXCEEDED, e.message)
         }
 
         val versionElement = root["schemaVersion"]
@@ -260,12 +273,12 @@ class MatchJsonCodec(
         val version = (versionElement as? JsonPrimitive)?.intOrNull
             ?: return ImportResult.Failure(
                 ImportFailureReason.TYPE_MISMATCH,
-                "schemaVersion 不是整数：$versionElement"
+                "schemaVersion 必须是整数"
             )
-        if (version != ExportBundle.SCHEMA_VERSION) {
+        if (version !in ExportBundle.SUPPORTED_SCHEMA_VERSIONS) {
             return ImportResult.Failure(
                 ImportFailureReason.UNSUPPORTED_SCHEMA_VERSION,
-                "不支持的 schemaVersion=$version（本版本仅支持 ${ExportBundle.SCHEMA_VERSION}）"
+                "不支持的 schemaVersion=$version（本版本支持 ${ExportBundle.SUPPORTED_SCHEMA_VERSIONS}）"
             )
         }
 
@@ -274,7 +287,7 @@ class MatchJsonCodec(
         if (appName != null && appName != ExportBundle.APP_NAME) {
             return ImportResult.Failure(
                 ImportFailureReason.INVALID_JSON,
-                "不是 RoundTrace 导出文件（app=$appName）"
+                "不是 RoundTrace 导出文件"
             )
         }
 
@@ -283,18 +296,18 @@ class MatchJsonCodec(
         } catch (e: MissingFieldException) {
             return ImportResult.Failure(
                 ImportFailureReason.MISSING_FIELD,
-                e.missingFields.joinToString(",")
+                e.missingFields.joinToString(",").take(256)
             )
         } catch (e: SerializationException) {
-            return ImportResult.Failure(ImportFailureReason.TYPE_MISMATCH, e.message)
+            return ImportResult.Failure(ImportFailureReason.TYPE_MISMATCH, "字段类型错误或字段值不受支持")
         } catch (e: IllegalArgumentException) {
-            return ImportResult.Failure(ImportFailureReason.TYPE_MISMATCH, e.message)
+            return ImportResult.Failure(ImportFailureReason.TYPE_MISMATCH, "字段类型错误或字段值不受支持")
         }
 
         return try {
             ImportResult.Success(bundle = toImportBundle(dto), preview = previewOf(dto))
         } catch (e: ImportParseException) {
-            ImportResult.Failure(e.reason, e.detail)
+            ImportResult.Failure(e.reason, e.detail?.take(256))
         }
     }
 
@@ -339,7 +352,21 @@ class MatchJsonCodec(
 
         val participants = dto.participants
             .sortedBy { it.seat }
-            .map { Participant(seat = it.seat, displayName = it.displayName, colorKey = it.colorKey) }
+            .map {
+                val defaultLayout = it.layoutX == -1f && it.layoutY == -1f
+                val customLayout = it.layoutX.isFinite() && it.layoutY.isFinite() &&
+                    it.layoutX in 0f..1f && it.layoutY in 0f..1f
+                if (!defaultLayout && !customLayout) {
+                    throw ImportParseException(ImportFailureReason.TYPE_MISMATCH, "座位布局坐标无效")
+                }
+                if (it.seat !in 1..dto.match.playerCount) {
+                    throw ImportParseException(ImportFailureReason.RULE_VALIDATION_FAILED, "座位超出人数范围")
+                }
+                Participant(
+                    seat = it.seat, displayName = it.displayName, colorKey = it.colorKey,
+                    layoutX = it.layoutX, layoutY = it.layoutY, avatarUri = it.avatarUri
+                )
+            }
 
         val duplicateSeats = participants.groupBy { it.seat }.filterValues { it.size > 1 }.keys
         if (duplicateSeats.isNotEmpty()) {
@@ -641,6 +668,12 @@ class MatchJsonCodec(
  * `DESIGN_SYNC.md §5.5`（`import_error_*`）。
  */
 enum class ImportFailureReason {
+    /** 文件字节、条数、文本或嵌套深度超过导入预算。 */
+    RESOURCE_LIMIT_EXCEEDED,
+
+    /** 系统文件提供方无法读取文件。 */
+    READ_FAILED,
+
     /** 根本不是合法 JSON */
     INVALID_JSON,
 

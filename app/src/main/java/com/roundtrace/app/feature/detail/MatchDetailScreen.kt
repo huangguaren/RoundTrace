@@ -34,6 +34,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.roundtrace.app.R
 import com.roundtrace.app.core.export.ShareLauncher
+import com.roundtrace.app.core.export.ImportTextReader
+import com.roundtrace.app.core.export.ImportTextReadResult
 import com.roundtrace.app.core.ui.component.ConfirmDialog
 import com.roundtrace.app.core.ui.component.StatusBadge
 import com.roundtrace.app.core.ui.component.toBadgeState
@@ -77,14 +79,10 @@ fun MatchDetailScreen(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val text = withContext(Dispatchers.IO) {
-                    runCatching {
-                        context.contentResolver.openInputStream(uri)?.bufferedReader()
-                            ?.use { it.readText() }
-                    }.getOrNull()
-                }
-                if (text != null) {
-                    onAction(MatchDetailAction.ImportJson(text))
+                when (val result = ImportTextReader.readDocument { context.contentResolver.openInputStream(uri) }) {
+                    is ImportTextReadResult.Text -> onAction(MatchDetailAction.ImportJson(result.value))
+                    is ImportTextReadResult.Rejected ->
+                        onAction(MatchDetailAction.ImportReadFailed(result.reason, result.detail))
                 }
             }
         }
@@ -265,6 +263,12 @@ fun MatchDetailScreen(
                 .heightIn(min = Dimens.MinTouchTarget)
         ) { Text(text = stringResource(R.string.settings_import_action)) }
 
+        Text(
+            text = stringResource(R.string.import_avatar_reference_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
         // —— 一次性反馈 ——
         state.message?.let { message ->
             Text(
@@ -421,10 +425,12 @@ private fun detailMessageText(message: DetailMessage): String = when (message) {
         R.string.detail_msg_imported,
         message.playerCount,
         message.eventCount
-    )
+    ) + if (message.skippedAvatarCount > 0) {
+        "\n" + stringResource(R.string.import_avatar_reference_hint)
+    } else ""
 
     is DetailMessage.ImportRejected -> stringResource(
         R.string.detail_msg_import_rejected,
-        message.reason
+        message.detail ?: message.reason
     )
 }

@@ -1,6 +1,8 @@
 package com.roundtrace.app.di
 
 import android.content.Context
+import android.content.ContentResolver
+import android.net.Uri
 import com.roundtrace.app.core.data.DataStoreSettingsRepository
 import com.roundtrace.app.core.data.MatchRepository
 import com.roundtrace.app.core.data.ProjectionRefreshCoordinator
@@ -142,7 +144,17 @@ class AppContainer(appContext: Context) {
     val importExport: ImportExportService by lazy {
         DefaultImportExportService(
             repository = matchRepository,
-            rules = avalonRules
+            rules = avalonRules,
+            canRestoreAvatarUri = { raw ->
+                // 导入文件只能复用本机已经持有读取授权的图片，不能自行授予外来 URI 权限。
+                runCatching {
+                    val uri = Uri.parse(raw)
+                    uri.scheme == ContentResolver.SCHEME_CONTENT &&
+                        applicationContext.contentResolver.persistedUriPermissions.any {
+                            it.isReadPermission && it.uri == uri
+                        }
+                }.getOrDefault(false)
+            }
         )
     }
 }

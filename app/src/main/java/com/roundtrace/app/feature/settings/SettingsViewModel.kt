@@ -77,6 +77,10 @@ class SettingsViewModel(
 
                 is SettingsAction.ImportJson -> importJson(action.text)
 
+                is SettingsAction.ImportReadFailed -> _state.value = _state.value.copy(
+                    importMessage = "导入被拒绝：${action.detail ?: action.reason.name}"
+                )
+
                 SettingsAction.ClearImportMessage ->
                     _state.value = _state.value.copy(importMessage = null)
             }
@@ -94,7 +98,8 @@ class SettingsViewModel(
                 }
             val message = when (outcome) {
                 is ImportOutcome.Imported ->
-                    "已导入：${outcome.preview.playerCount} 人局 · ${outcome.preview.eventCount} 条事件"
+                    "已导入：${outcome.preview.playerCount} 人局 · ${outcome.preview.eventCount} 条事件" +
+                        if (outcome.skippedAvatarCount > 0) "；${outcome.skippedAvatarCount} 个头像需重新选择" else ""
                 is ImportOutcome.Rejected ->
                     "导入被拒绝：${outcome.detail ?: outcome.reason.name}"
             }

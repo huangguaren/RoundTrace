@@ -30,8 +30,11 @@ data class ExportBundle(
     @SerialName("exportOptions") val exportOptions: ExportOptions = ExportOptions()
 ) {
     companion object {
-        /** 当前导出契约版本。**只在结构不兼容时 +1**。 */
-        const val SCHEMA_VERSION: Int = 1
+        /** v2 显式扩展座位布局与本机头像引用；导入继续支持 v1。 */
+        const val SCHEMA_VERSION: Int = 2
+
+        /** v1 缺少布局和头像字段，按参与人默认值导入。 */
+        val SUPPORTED_SCHEMA_VERSIONS: IntRange = 1..SCHEMA_VERSION
 
         /** 写入 `app` 字段，导入时用来拒绝别的 App 的文件。 */
         const val APP_NAME: String = "RoundTrace"
@@ -75,7 +78,11 @@ data class ExportRoleSlot(
 data class ExportParticipant(
     @SerialName("seat") val seat: Int,
     @SerialName("displayName") val displayName: String? = null,
-    @SerialName("colorKey") val colorKey: String? = null
+    @SerialName("colorKey") val colorKey: String? = null,
+    @SerialName("layoutX") val layoutX: Float = -1f,
+    @SerialName("layoutY") val layoutY: Float = -1f,
+    /** 仅保存原设备图片引用；实际导入仅恢复已持久授权的 content URI，不含图片数据。 */
+    @SerialName("avatarUri") val avatarUri: String? = null
 )
 
 /**

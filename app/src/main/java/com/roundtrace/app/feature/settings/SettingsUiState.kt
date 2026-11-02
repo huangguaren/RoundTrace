@@ -45,6 +45,11 @@ sealed interface SettingsAction {
     /** 导入一段 JSON 文本（由 UI 从 ACTION_OPEN_DOCUMENT 读入后传入）。 */
     data class ImportJson(val text: String) : SettingsAction
 
+    data class ImportReadFailed(
+        val reason: com.roundtrace.app.core.export.ImportFailureReason,
+        val detail: String?
+    ) : SettingsAction
+
     /** 清除一次性导入反馈。 */
     data object ClearImportMessage : SettingsAction
 }

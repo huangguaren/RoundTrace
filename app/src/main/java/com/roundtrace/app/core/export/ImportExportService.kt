@@ -6,6 +6,9 @@ import com.roundtrace.app.core.model.MatchId
 import com.roundtrace.app.core.model.RuleIssue
 import com.roundtrace.app.core.model.UnknownItem
 import com.roundtrace.app.core.rules.GameRules
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 /**
  * 导入 / 导出服务（TASKS.md T60 / ARCHITECTURE §8.10）。
@@ -70,7 +73,9 @@ sealed interface ImportOutcome {
 
     data class Imported(
         val matchId: MatchId,
-        val preview: ImportPreview
+        val preview: ImportPreview,
+        /** 无本机读取授权的图片引用已清除，其余对局数据照常导入。 */
+        val skippedAvatarCount: Int = 0
     ) : ImportOutcome
 
     /**
@@ -89,7 +94,9 @@ class DefaultImportExportService(
     private val repository: MatchRepository,
     private val rules: GameRules,
     private val codec: MatchJsonCodec = MatchJsonCodec(),
-    private val markdownExporter: MarkdownExporter = MarkdownExporter(rules)
+    private val markdownExporter: MarkdownExporter = MarkdownExporter(rules),
+    /** 平台层只批准原设备上已获持久读取授权的 content URI；默认不恢复外来引用。 */
+    private val canRestoreAvatarUri: (String) -> Boolean = { false }
 ) : ImportExportService {
 
     override suspend fun exportJson(matchId: MatchId, options: ExportOptions): ExportResult {
@@ -137,7 +144,7 @@ class DefaultImportExportService(
     override fun previewJson(text: String): ImportResult = codec.decode(text)
 
     override suspend fun importFromJson(text: String): ImportOutcome {
-        val parsed = codec.decode(text)
+        val parsed = withContext(Dispatchers.Default) { codec.decode(text) }
         if (parsed is ImportResult.Failure) {
             return ImportOutcome.Rejected(parsed.reason, parsed.detail)
         }
@@ -155,8 +162,25 @@ class DefaultImportExportService(
         }
 
         return try {
-            val newMatchId = repository.importBundle(success.bundle)
-            ImportOutcome.Imported(newMatchId, success.preview)
+            var skippedAvatarCount = 0
+            val safeParticipants = success.bundle.participants.map { participant ->
+                val uri = participant.avatarUri ?: return@map participant
+                val approved = uri.startsWith("content://") && try {
+                    canRestoreAvatarUri(uri)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                if (approved) participant else {
+                    skippedAvatarCount += 1
+                    participant.copy(avatarUri = null)
+                }
+            }
+            val newMatchId = repository.importBundle(success.bundle.copy(participants = safeParticipants))
+            ImportOutcome.Imported(newMatchId, success.preview, skippedAvatarCount)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ImportOutcome.Rejected(ImportFailureReason.STORAGE_FAILED, e.message)
         }

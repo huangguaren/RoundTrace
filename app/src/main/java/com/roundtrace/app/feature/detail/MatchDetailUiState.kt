@@ -57,7 +57,11 @@ sealed interface DetailMessage {
 
     data class ExportFailed(val detail: String?) : DetailMessage
 
-    data class Imported(val eventCount: Int, val playerCount: Int) : DetailMessage
+    data class Imported(
+        val eventCount: Int,
+        val playerCount: Int,
+        val skippedAvatarCount: Int = 0
+    ) : DetailMessage
 
     data class ImportRejected(val reason: String, val detail: String?) : DetailMessage
 }
@@ -84,6 +88,11 @@ sealed interface MatchDetailAction {
 
     /** 导入文本（由 UI 从用户选择的文件读入后传入，ViewModel 不碰 Context）。 */
     data class ImportJson(val text: String) : MatchDetailAction
+
+    data class ImportReadFailed(
+        val reason: com.roundtrace.app.core.export.ImportFailureReason,
+        val detail: String?
+    ) : MatchDetailAction
 
     data object ClearMessage : MatchDetailAction
 }

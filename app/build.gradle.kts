@@ -54,6 +54,9 @@ android {
             isIncludeAndroidResources = true
             all {
                 it.useJUnit()
+                // Robolectric 的 ParcelFileDescriptor 拦截器需要在 JDK 17 读取 fd 字段；
+                // 只对测试 JVM 开放 java.io，不影响应用运行时。
+                it.jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED")
                 // Robolectric 默认从 Maven Central 拉 android-all；本机 repo1 不通，
                 // 改用阿里云镜像（实测 6.7MB/s）。见 docs/decisions.md B28。
                 it.systemProperty(
@@ -124,6 +127,12 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.room.testing)
+    // 本地 Compose 交互回归：Robolectric 驱动实际提案弹窗的点击路径。
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.androidx.test.junit)
+    testImplementation(libs.androidx.test.runner)
+    testImplementation(libs.androidx.test.espresso.core)
     // 领域层保持零框架耦合；序列化仅在测试中用于校验 fixture JSON 可解析
     testImplementation(libs.kotlinx.serialization.json)
 

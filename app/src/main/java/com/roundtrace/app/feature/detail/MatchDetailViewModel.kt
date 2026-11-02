@@ -70,6 +70,9 @@ class MatchDetailViewModel(
             is MatchDetailAction.Rename -> rename(action.title)
             MatchDetailAction.Delete -> delete()
             is MatchDetailAction.ImportJson -> importJson(action.text)
+            is MatchDetailAction.ImportReadFailed -> _state.value = _state.value.copy(
+                message = DetailMessage.ImportRejected(action.reason.name, action.detail)
+            )
             MatchDetailAction.ClearMessage -> _state.value = _state.value.copy(message = null)
         }
     }
@@ -176,7 +179,8 @@ class MatchDetailViewModel(
                     isBusy = false,
                     message = DetailMessage.Imported(
                         eventCount = outcome.preview.eventCount,
-                        playerCount = outcome.preview.playerCount
+                        playerCount = outcome.preview.playerCount,
+                        skippedAvatarCount = outcome.skippedAvatarCount
                     )
                 )
 
