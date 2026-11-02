@@ -1,6 +1,8 @@
 package com.roundtrace.app.feature.record
 
+import com.roundtrace.app.core.model.EventId
 import com.roundtrace.app.core.model.EventType
+import com.roundtrace.app.core.model.MatchEvent
 import com.roundtrace.app.core.model.MatchStatus
 import com.roundtrace.app.core.model.MatchSummary
 import com.roundtrace.app.core.model.MissionOutcome
@@ -153,6 +155,13 @@ sealed interface RecordCommitResult {
  * **全部字段都由 `observeBundle → ReplayEngine.replay` 派生**（T44④）：
  * ViewModel 不重复计算票数、门槛、成败——那些是 `AvalonRules` 的唯一职责。
  */
+/** NX-06：待确认的编辑（先预览，确认后才写库） */
+data class PendingEdit(
+    val targetEventId: EventId,
+    val replacement: MatchEvent,
+    val warning: ImpactWarning
+)
+
 /** NX-06：修改早期事件后，后续受影响记录的提示 */
 data class ImpactWarning(
     val title: String,
@@ -320,4 +329,10 @@ sealed interface RecordAction {
 
     /** NX-06：确认影响提示，退出编辑模式 */
     data object AcknowledgeImpactWarning : RecordAction
+
+    /** NX-06：确认待编辑内容，真正写库 */
+    data object ConfirmPendingEdit : RecordAction
+
+    /** NX-06：取消待编辑内容，不写库 */
+    data object CancelPendingEdit : RecordAction
 }

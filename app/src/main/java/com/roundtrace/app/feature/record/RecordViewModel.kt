@@ -96,6 +96,9 @@ class RecordViewModel(
     /** NX-06：修改早期事件后的影响提示 */
     private val impactWarningFlow = MutableStateFlow<ImpactWarning?>(null)
 
+    /** NX-06：待确认的编辑（先预览，确认后才写库） */
+    private val pendingEditFlow = MutableStateFlow<PendingEdit?>(null)
+
     private var draftSaveJob: Job? = null
 
     /**
@@ -255,6 +258,29 @@ class RecordViewModel(
             is RecordAction.AcknowledgeImpactWarning -> {
                 impactWarningFlow.value = null
                 editingQuestFlow.value = null
+            }
+            is RecordAction.ConfirmPendingEdit -> {
+                val pending = pendingEditFlow.value ?: return
+                pendingEditFlow.value = null
+                impactWarningFlow.value = null
+                // 真正写库
+                viewModelScope.launch {
+                    saveStatusFlow.value = SaveStatus.SAVING
+                    val result = runCatchingCancellable {
+                        repository.reviseEvent(matchId, pending.targetEventId, pending.replacement)
+                    }
+                    if (result.isSuccess) {
+                        saveStatusFlow.value = SaveStatus.SAVED
+                        editSessionFlow.value = null
+                        commitResultFlow.value = RecordCommitResult.Succeeded
+                    } else {
+                        saveStatusFlow.value = SaveStatus.FAILED
+                    }
+                }
+            }
+            is RecordAction.CancelPendingEdit -> {
+                pendingEditFlow.value = null
+                impactWarningFlow.value = null
             }
 
             RecordAction.ClearUndoFeedback -> undoFeedbackFlow.value = null
