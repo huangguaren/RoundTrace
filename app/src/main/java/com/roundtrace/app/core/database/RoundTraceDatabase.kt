@@ -168,6 +168,38 @@ internal fun warnOnCrossMatchSupersedes(db: SupportSQLiteDatabase) {
 }
 
 /**
+ * 迁移前备份的结果（F3）。
+ *
+ * 为什么要有返回值：原来只复制文件然后无条件 `Log.i("迁移前备份完成")`，
+ * 而 `wal_checkpoint(TRUNCATE)` 在**别的连接还持着读锁**时会返回 `busy=1` 且**不做合并**，
+ * 于是复制到的是一个「缺最近事务」的备份，却报「完成」——这种备份比没有备份更危险。
+ * 现在把判断结果变成返回值，日志与返回值同源，测试也能直接断言。
+ */
+internal sealed interface BackupOutcome {
+
+    /** 不需要备份：库不存在，或版本不在 v1..v3。 */
+    data object NotNeeded : BackupOutcome
+
+    /** 备份完成，且 WAL 已完全合并（可放心当回退点）。 */
+    data object Complete : BackupOutcome
+
+    /** 备份文件已生成，但 WAL 未能完全合并 —— **可能缺最近事务**，不得报「完成」。 */
+    data class Incomplete(val reason: String) : BackupOutcome
+}
+
+/** `PRAGMA wal_checkpoint(TRUNCATE)` 的三元组。`busy != 0` 表示未能完全合并。 */
+internal data class WalCheckpointResult(val busy: Int, val log: Int, val checkpointed: Int) {
+
+    /** 只有 `busy == 0` 才算「WAL 已合并」。无法解析时用 [UNKNOWN]（busy = -1）走保守分支。 */
+    val isComplete: Boolean get() = busy == 0
+
+    companion object {
+        /** 拿不到结果（PRAGMA 失败 / 无返回行）：当作「未完成」，绝不当作成功。 */
+        val UNKNOWN: WalCheckpointResult = WalCheckpointResult(busy = -1, log = -1, checkpointed = -1)
+    }
+}
+
+/**
  * 迁移前自动备份（migration-plan §14-① 第 5 条）。
  *
  * ## 为什么必须在 `Room.databaseBuilder(...)` **之前**调用
@@ -179,27 +211,47 @@ internal fun warnOnCrossMatchSupersedes(db: SupportSQLiteDatabase) {
  * ## 三个必须的处理
  *
  * 1. **WAL**：本库启用了 `WRITE_AHEAD_LOGGING`，最新事务可能还在 `-wal` 文件里。
- *    不先 `PRAGMA wal_checkpoint(TRUNCATE)` 就复制，会得到「缺最近事务」的备份——
- *    这种备份比没有备份更危险，因为它看起来是好的。
+ *    不先 `PRAGMA wal_checkpoint(TRUNCATE)` 就复制，会得到「缺最近事务」的备份。
+ *    checkpoint 的 `busy` 必须参与判断（F3）：busy 时照常复制（有总比没有好），
+ *    但结果降级为 [BackupOutcome.Incomplete]，日志不得写「完成」。
  * 2. **只备份 v1..v3**：v4 已经是目标版本，不需要备份（也就不会每次启动都复制一遍）。
  * 3. **绝不抛出**：备份失败只 `Log.w`。备份是为了降低风险，不能自己变成新的启动失败源。
+ *
+ * @param checkpoint WAL 合并动作，可注入（测试用它模拟 busy）
  */
-internal fun backupBeforeMigration(context: Context, name: String) {
-    runCatching {
-        val dbFile = context.applicationContext.getDatabasePath(name)
-        if (!dbFile.exists()) return
+internal fun backupBeforeMigration(
+    context: Context,
+    name: String,
+    checkpoint: (SQLiteDatabase) -> WalCheckpointResult = ::runWalCheckpoint
+): BackupOutcome = try {
+    val dbFile = context.applicationContext.getDatabasePath(name)
+    if (!dbFile.exists()) {
+        BackupOutcome.NotNeeded
+    } else {
+        val (version, wal) = readUserVersionWithCheckpoint(dbFile, checkpoint)
+        if (version !in OLDEST_BACKED_UP_VERSION..NEWEST_BACKED_UP_VERSION) {
+            BackupOutcome.NotNeeded
+        } else {
+            val target = File(dbFile.parentFile, "$name.bak.v$version")
+            dbFile.copyTo(target, overwrite = true)
+            deleteOlderBackups(dbFile.parentFile, name, keepVersion = version)
 
-        val version = readUserVersionWithCheckpoint(dbFile)
-        if (version !in OLDEST_BACKED_UP_VERSION..NEWEST_BACKED_UP_VERSION) return
-
-        val target = File(dbFile.parentFile, "$name.bak.v$version")
-        dbFile.copyTo(target, overwrite = true)
-        deleteOlderBackups(dbFile.parentFile, name, keepVersion = version)
-
-        Log.i(DB_TAG, "迁移前备份完成：v$version → ${target.name}")
-    }.onFailure { throwable ->
-        Log.w(DB_TAG, "迁移前备份失败（已忽略，不阻断启动）", throwable)
+            if (wal.isComplete) {
+                Log.i(DB_TAG, "迁移前备份完成：v$version → ${target.name}")
+                BackupOutcome.Complete
+            } else {
+                Log.w(
+                    DB_TAG,
+                    "迁移前备份可能缺最近事务（wal_checkpoint busy=${wal.busy}）：" +
+                        "v$version → ${target.name}"
+                )
+                BackupOutcome.Incomplete("wal_checkpoint busy=${wal.busy}")
+            }
+        }
     }
+} catch (throwable: Throwable) {
+    Log.w(DB_TAG, "迁移前备份失败（已忽略，不阻断启动）", throwable)
+    BackupOutcome.Incomplete("exception: ${throwable.javaClass.simpleName}")
 }
 
 /** 需要备份的版本区间：v1..v3（v4 是当前版本）。 */
@@ -210,24 +262,44 @@ private const val NEWEST_BACKED_UP_VERSION = 3
  * 先 checkpoint 再读 `user_version`。
  *
  * 打开方式用 `OPEN_READWRITE`：`wal_checkpoint` 需要写权限（要把 `-wal` 合并回主文件）。
+ *
+ * busy 时**重试一次**：busy 通常来自一个瞬时的读者，重试能救回大部分情况；
+ * 第二次仍 busy 就把结果原样返回，由调用方决定日志级别。
  */
-private fun readUserVersionWithCheckpoint(dbFile: File): Int {
+private fun readUserVersionWithCheckpoint(
+    dbFile: File,
+    checkpoint: (SQLiteDatabase) -> WalCheckpointResult
+): Pair<Int, WalCheckpointResult> {
     val sqlite = SQLiteDatabase.openDatabase(
         dbFile.path,
         null,
         SQLiteDatabase.OPEN_READWRITE
     )
     return sqlite.use { db ->
-        // 忽略 checkpoint 的返回值：即使因其它连接占用而未能完全合并，
-        // 后面复制到的也至少是「某个一致状态」，不会比不 checkpoint 更差。
-        runCatching {
-            db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+        var wal = runCatching { checkpoint(db) }.getOrDefault(WalCheckpointResult.UNKNOWN)
+        if (!wal.isComplete) {
+            wal = runCatching { checkpoint(db) }.getOrDefault(wal)
         }
-        db.rawQuery("PRAGMA user_version", null).use { cursor ->
+        val version = db.rawQuery("PRAGMA user_version", null).use { cursor ->
             if (cursor.moveToFirst()) cursor.getInt(0) else 0
         }
+        version to wal
     }
 }
+
+/** 真正的 `PRAGMA wal_checkpoint(TRUNCATE)`：返回 (busy, log, checkpointed)。 */
+private fun runWalCheckpoint(db: SQLiteDatabase): WalCheckpointResult =
+    db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { cursor ->
+        if (!cursor.moveToFirst()) {
+            WalCheckpointResult.UNKNOWN
+        } else {
+            WalCheckpointResult(
+                busy = cursor.getInt(0),
+                log = if (cursor.columnCount > 1) cursor.getInt(1) else -1,
+                checkpointed = if (cursor.columnCount > 2) cursor.getInt(2) else -1
+            )
+        }
+    }
 
 /** 只保留最新一份备份，避免历史备份把用户存储撑爆。 */
 private fun deleteOlderBackups(dir: File?, name: String, keepVersion: Int) {
