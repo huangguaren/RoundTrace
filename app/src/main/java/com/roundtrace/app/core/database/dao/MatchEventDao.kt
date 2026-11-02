@@ -42,26 +42,46 @@ abstract class MatchEventDao {
     @Insert
     abstract suspend fun insertAll(items: List<MatchEventEntity>)
 
+    /**
+     * 读路径（RT-003 Step 3）：排序键是**逻辑位置**，不是写入序号。
+     *
+     * 让数据层先给出正确顺序，内存里的 `.sortedBy` 退化为幂等的防御——
+     * 正确性不该依赖「未来不会有人删掉那行重排」（RT-003 当初就是这么来的）。
+     */
     @Query(
         "SELECT * FROM match_events WHERE matchId = :matchId AND retracted = 0 " +
-            "ORDER BY occurredOrder ASC"
+            "ORDER BY logicalPosition ASC, revisionSeq ASC"
     )
     abstract fun observeActive(matchId: String): Flow<List<MatchEventEntity>>
 
     @Query(
         "SELECT * FROM match_events WHERE matchId = :matchId AND retracted = 0 " +
-            "ORDER BY occurredOrder ASC"
+            "ORDER BY logicalPosition ASC, revisionSeq ASC"
     )
     abstract suspend fun listActive(matchId: String): List<MatchEventEntity>
 
-    @Query("SELECT * FROM match_events WHERE matchId = :matchId ORDER BY occurredOrder ASC")
+    /** 审计视图：按「位置 + 版本」读，才能看出同一位置有几个版本。 */
+    @Query(
+        "SELECT * FROM match_events WHERE matchId = :matchId " +
+            "ORDER BY logicalPosition ASC, revisionSeq ASC"
+    )
     abstract suspend fun listAll(matchId: String): List<MatchEventEntity>
 
+    /**
+     * 取某个**逻辑位置**之前（含）的 active 事件。
+     *
+     * 参数名刻意从 `order` 改成 `logicalPosition`：如果这里还叫 `order`，
+     * 调用方极可能传写入序号，而 SQL 比的是逻辑位置 —— 那是**静默返回错误子集且不报错**，
+     * 正是 RT-003 的原病灶（一个字段两种语义）。改名让误用变成编译期可见的语义冲突。
+     */
     @Query(
-        "SELECT * FROM match_events WHERE matchId = :matchId AND occurredOrder <= :order " +
-            "AND retracted = 0 ORDER BY occurredOrder ASC"
+        "SELECT * FROM match_events WHERE matchId = :matchId AND logicalPosition <= :logicalPosition " +
+            "AND retracted = 0 ORDER BY logicalPosition ASC, revisionSeq ASC"
     )
-    abstract suspend fun listActiveUpTo(matchId: String, order: Int): List<MatchEventEntity>
+    abstract suspend fun listActiveUpTo(
+        matchId: String,
+        logicalPosition: Int
+    ): List<MatchEventEntity>
 
     @Query("SELECT * FROM match_events WHERE id = :id")
     abstract suspend fun findById(id: String): MatchEventEntity?

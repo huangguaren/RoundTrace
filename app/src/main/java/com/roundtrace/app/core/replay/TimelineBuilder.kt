@@ -37,7 +37,9 @@ object TimelineBuilder {
      * 构建时间线。
      *
      * @param events 事件列表（可含 `retracted`，本方法会过滤）
-     * @param upTo 只包含 `occurredOrder <= upTo` 的事件；null = 全部
+     * @param upTo 逻辑位置上界（`logicalPosition`）。领域事件的 `occurredOrder` 已完成该映射
+     *        （见 `EventCodec.decode`，RT-003 Step 3），因此这里仍以 `occurredOrder` 命名。
+     *        修订条目会回到它在时间线上的原位置，而不是排在末尾。null = 全部。
      */
     fun build(events: List<MatchEvent>, upTo: Int? = null): List<TimelineEntry> =
         events.asSequence()

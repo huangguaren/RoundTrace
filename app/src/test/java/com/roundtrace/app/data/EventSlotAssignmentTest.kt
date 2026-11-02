@@ -240,59 +240,64 @@ class EventSlotAssignmentTest {
     // ————————————————————————————————————————————————————————
 
     /**
-     * **冻结测试**：Step 1 不允许提前切读路径。
+     * **Step 3 翻转后的语义测试**：领域 `occurredOrder` 现在承载**逻辑位置**。
      *
-     * `ReplayEngine` 是按**领域 `occurredOrder`** 做 `upTo` 过滤与排序的
-     * （`filter { upTo == null || it.occurredOrder <= upTo }`）。因此只要 `EventCodec.decode`
-     * 改成取 `logicalPosition`，读路径修复就会提前生效：
-     * 一条「位置 5 / 写入序号 6」的修订事件会被 `replay(upTo = 5)` 算进去 ——
-     * 那是 Step 3 才允许定义的行为，且会让 v3 老数据升级后「历史解读自己变了」。
+     * 这条用例在 Step 1 是「冻结测试」（名字 `step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition`，
+     * 断言领域值 == 列写入序号）。Step 3 把 `EventCodec.decode` 切到 `logicalPosition` 后，
+     * 按 migration-plan §17.5 逐条翻转期望值——**改名与改期望都是这一步的组成部分**，
+     * 不是"测试挡路了就改测试"：
      *
-     * 本用例把**今天的行为**钉住。Step 3 切换读路径时它会变红——那正是切换的信号，
-     * 届时改写期望值（并把函数名里的 step1_ 去掉）。
+     * | 断言 | Step 1（旧） | Step 3（新） |
+     * |---|---|---|
+     * | A | 领域 == 写入序号（6） | 领域 == 逻辑位置（**5**） |
+     * | B | 领域 != 逻辑位置 | 领域 != 写入序号（**≠6**） |
+     * | C | `GamePosition(5)` **不含** | `GamePosition(5)` **含**、`GamePosition(4)` 不含 |
+     * | E | 序号 `[1,2,3,4,6]` | 序号 `[1,2,3,4,5]` |
      */
     @Test
-    fun step1_decodedOccurredOrderStillEqualsColumnNotLogicalPosition() = runBlocking {
+    fun step3_decodedOccurredOrderFollowsLogicalPosition() = runBlocking {
         val matchId = createMatch()
         (1..5).forEach { index -> append(matchId, "e-$index") }
         val slot = revise(matchId, targetId = "e-5", newId = "e-5-v2")
 
-        assertEquals("前提：修订的写入序号应为 6", 6, slot.occurredOrder)
-        assertEquals("前提：修订的逻辑位置应为 5", 5, slot.logicalPosition)
+        assertEquals("前提 1：写入序号仍是 6（列 occurredOrder）", 6, slot.occurredOrder)
+        assertEquals("前提 2：逻辑位置仍是 5", 5, slot.logicalPosition)
 
         val bundle = repository.getBundle(matchId)!!
         val revision = bundle.events.first { it.eventId.raw == "e-5-v2" }
 
+        // 断言 A：领域 occurredOrder 现在等于 logicalPosition
         assertEquals(
-            "Step 1 冻结：领域 occurredOrder 必须等于**列** occurredOrder（写入序号），不取 logicalPosition",
-            slot.occurredOrder,
-            revision.occurredOrder
-        )
-        assertNotEquals(
-            "Step 1 冻结：领域 occurredOrder 不得等于 logicalPosition（Step 3 才切）",
+            "Step 3：领域 occurredOrder 必须等于逻辑位置（5）",
             slot.logicalPosition,
             revision.occurredOrder
         )
-
-        // upTo 语义必须仍是「按写入序号」：位置 5 的时间点看不含这条修订
-        assertTrue(
-            "Step 1 冻结：replay(upTo = 5) 不得包含写入序号 6 的修订事件",
-            !GamePosition(5).includes(revision.occurredOrder)
-        )
-        assertTrue(
-            "Step 1 冻结：replay(upTo = 6) 才包含它",
-            GamePosition(6).includes(revision.occurredOrder)
+        // 断言 B：不再等于写入序号
+        assertNotEquals(
+            "Step 3：领域 occurredOrder 不得再等于写入序号（6）",
+            slot.occurredOrder,
+            revision.occurredOrder
         )
 
-        // 排序仍是「按列 occurredOrder」→ 修订排在最末尾（而不是在原位置 5 上）
+        // 断言 C：upTo 现在是「逻辑位置上界」
+        assertTrue(
+            "Step 3：GamePosition(5) 必须包含该修订（它就在第 5 个逻辑位置）",
+            GamePosition(5).includes(revision.occurredOrder)
+        )
+        assertTrue(
+            "Step 3：GamePosition(4) 必须不包含它",
+            !GamePosition(4).includes(revision.occurredOrder)
+        )
+
+        // 断言 E/F：顺序按逻辑位置，修订回到原位置（而不是排末尾）
         assertEquals(
-            "Step 1 冻结：bundle 的事件顺序仍是列 occurredOrder 升序（修订排末尾）",
+            "Step 3：事件 id 顺序应为 e-1..e-4 再 e-5-v2（修订占据位置 5）",
             listOf("e-1", "e-2", "e-3", "e-4", "e-5-v2"),
             bundle.events.map { it.eventId.raw }
         )
         assertEquals(
-            "Step 1 冻结：重放看到的顺序编号应为 1,2,3,4,6（跳过被撤销的 5）",
-            listOf(1, 2, 3, 4, 6),
+            "Step 3：领域序号应为 1,2,3,4,5 —— 修订不再让历史变长",
+            listOf(1, 2, 3, 4, 5),
             bundle.events.map { it.occurredOrder }
         )
     }

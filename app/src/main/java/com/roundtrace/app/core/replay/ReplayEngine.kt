@@ -23,7 +23,10 @@ class ReplayEngine(private val reducer: GameReducer) {
      * 重放。
      *
      * @param match 重放输入（`events` 可含 `retracted`，本方法会过滤）
-     * @param upTo 只重放 `occurredOrder <= upTo` 的事件；null = 全部
+     * @param upTo 逻辑位置上界（`logicalPosition`）。领域事件的 `occurredOrder` 已完成该映射
+     *        （见 `EventCodec.decode`，RT-003 Step 3），因此这里仍以 `occurredOrder` 命名。
+     *        `upTo = k` 表示「把时间停在第 k 个逻辑位置之后」；修订不会让历史变长，
+     *        所以 k 的含义跨版本稳定。null = 全部。
      */
     fun replay(match: ReconstructedMatch, upTo: Int? = null): ReductionResult {
         val activeEvents: List<MatchEvent> = match.events

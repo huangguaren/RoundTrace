@@ -17,6 +17,18 @@ import com.roundtrace.app.core.model.SeatId
  *
  * @param events **仅 `retracted = false`**，按 `occurredOrder` 升序
  * @param revealedAt 身份揭晓时刻；`null` = 尚未揭晓（上帝视角不可用）
+ *
+ * ## [events] 的五条契约（RT-003 Step 3 起，写死并由 `MatchBundleOrderContractTest` 钉住）
+ *
+ * 1. **不含** `retracted = true` 的事件；
+ * 2. 按**逻辑位置**严格升序（`occurredOrder` 即逻辑位置），与「写入先后」「recordedAt」无关；
+ * 3. 每个逻辑位置**至多出现一次**：同位置的多个版本只保留 `revisionSeq` 最大者
+ *    （违规行不删不改，只在 debug 日志留证）；
+ * 4. `events.size` **不保证**等于 `MAX(logicalPosition)` —— 撤销会留下 dormant 位置
+ *    （位置已分配、但该位置没有 active 版本），因此 `size` 可能小于最大位置；
+ * 5. 元素的 `occurredOrder` **等于**其 `logicalPosition`：对调用方来说它就是「第几个事件」。
+ *
+ * 第 4 条特别容易被误用：**不要**用 `events.size` 当「最大位置」去构造 `GamePosition`。
  */
 data class MatchBundle(
     val summary: MatchSummary,

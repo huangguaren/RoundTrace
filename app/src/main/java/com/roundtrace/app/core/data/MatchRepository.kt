@@ -77,7 +77,21 @@ interface MatchRepository {
     suspend fun importBundle(bundle: ImportBundle): MatchId
 }
 
-/** 追加/修订/撤销的结果。 */
+/**
+ * 追加/修订/撤销的结果。
+ *
+ * ## [occurredOrder] 的语义（RT-003 Step 3 裁定为**写入序号**，不是逻辑位置）
+ *
+ * 它是「这次写入落库时被分配的写入序号」，也就是 `match_events.occurredOrder` 列的值；
+ * 修订事件时它是**新的写入序号**（比旧版本大），不是该事件的逻辑位置。
+ *
+ * 为什么不让它改成逻辑位置：
+ * 1. 字段名来自列名，改语义等于给同名字段两套含义 —— 这正是 RT-003 的病根；
+ * 2. `AppendResult` 是**写结果** DTO（同结构里还有 `error`），调用方关心的是「写进去了没有、写在第几条」；
+ * 3. 需要逻辑位置时应当从重放结果或事件本身取，那里语义明确。
+ *
+ * 当前**没有任何生产消费方**读取该字段（仅测试断言写入序号递增），因此这次裁定的成本为零。
+ */
 data class AppendResult(
     val matchId: MatchId,
     val eventId: EventId?,

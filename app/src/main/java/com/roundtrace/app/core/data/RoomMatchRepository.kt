@@ -1,6 +1,7 @@
 package com.roundtrace.app.core.data
 
 import androidx.room.withTransaction
+import com.roundtrace.app.BuildConfig
 import com.roundtrace.app.core.database.EventCodec
 import com.roundtrace.app.core.database.Mapping
 import com.roundtrace.app.core.database.RoundTraceDatabase
@@ -464,8 +465,36 @@ class RoomMatchRepository(
         roles: List<RoleAssignmentEntity>,
         eventEntities: List<MatchEventEntity>
     ): MatchBundle {
-        val events = eventEntities
+        // RT-003 Step 3：同位置多版本先定胜负，再按逻辑位置排序（契约见 MatchBundle KDoc）。
+        //
+        // 为什么去重必须在 decode **之前**：领域 `MatchEvent` 没有 `revisionSeq` 字段
+        // （Step 1 刻意不加，保持 8 个公共字段不变），所以胜负只能在实体层判。
+        //
+        // 排序键四段是刻意写全的：`revisionSeq` 相同时用 `recordedAt`、再退化为 `id`，
+        // 保证**同一份数据在任何设备上得到同一结果**（不能依赖 SQLite 的隐式行序）。
+        val sortedForDedup = eventEntities.sortedWith(
+            compareBy<MatchEventEntity> { it.logicalPosition }
+                .thenByDescending { it.revisionSeq }
+                .thenBy { it.recordedAt }
+                .thenBy { it.id }
+        )
+        val deduped = sortedForDedup.distinctBy { it.logicalPosition }
+        if (deduped.size != sortedForDedup.size) {
+            // 不变量本该由 reviseWithSlot 保证；走到这里说明数据异常（B3 自检也会报同样的位置）。
+            // 这里**不删不改**违规行，只是日志留证，然后按确定规则继续读。
+            if (BuildConfig.DEBUG) {
+                android.util.Log.w(
+                    "RoundTraceDb",
+                    "读取时发现同位置多条 active 事件：matchId=${matchEntity.id}，" +
+                        "丢弃 ${sortedForDedup.size - deduped.size} 条（保留 revisionSeq 最大的版本）"
+                )
+            }
+        }
+
+        val events = deduped
             .map { codec.decode(it) }
+            // 幂等兜底：decode 已让领域 occurredOrder == logicalPosition，这里的 sortedBy 是 no-op，
+            // 但保留它可防止「未来有人改 decode 或删掉上面的排序」时顺序悄悄错乱。
             .sortedBy { it.occurredOrder }
 
         val summary = MatchSummary(
