@@ -34,6 +34,13 @@ object TimelineBuilder {
     const val UNRECORDED_LABEL: String = "—— 未记录"
 
     /**
+     * 时间线里自由文本（`PlayerClaimed.text`）的展示上限。
+     *
+     * 超长就截断加省略号：时间线是列表，整段话会把卡片撑爆；完整文本另有详情入口。
+     */
+    const val MAX_CLAIM_TEXT_LENGTH: Int = 60
+
+    /**
      * 构建时间线。
      *
      * @param events 事件列表（可含 `retracted`，本方法会过滤）
@@ -140,13 +147,7 @@ object TimelineBuilder {
             occurredOrder = event.occurredOrder,
             phaseLabel = questPhaseLabel(event.questNo),
             title = claimTitle(event),
-            detail = buildString {
-                append(claimTypeLabel(event.claimType.name))
-                if (event.targetSeats.isNotEmpty()) {
-                    append(" · 目标 ")
-                    append(event.targetSeats.joinToString(" / ") { "$it 号" })
-                }
-            }.takeIf { it.isNotEmpty() } ?: "公开发言",
+            detail = claimDetail(event),
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
         )
@@ -244,6 +245,42 @@ object TimelineBuilder {
             else -> "${event.speakerSeat} 号发言（${claimTypeLabel(event.claimType.name)}）"
         }
     }
+
+    /**
+     * 发言条目的第二行：类型 / 目标 + **用户录入的自由文本**（F4）。
+     *
+     * 文本要进 detail 而不是 title：title 保持一行可扫读，长文放 detail。
+     * 超过 [MAX_CLAIM_TEXT_LENGTH] 截断并加省略号 —— 时间线是列表，整段话会把卡片撑爆，
+     * 完整文本在复盘详情里另有入口。
+     *
+     * 注意：这里拿到的事件**已经过可见性过滤**（`ReplayViewModel` 先用
+     * `VisibleEventPolicy.forPerspective` 过滤，`RecordScreen` 用的是本人记录不受影响），
+     * 本函数不做任何可见性判断，也不能绕过那条唯一出口。
+     */
+    private fun claimDetail(event: PlayerClaimed): String {
+        val meta = buildString {
+            append(claimTypeLabel(event.claimType.name))
+            if (event.targetSeats.isNotEmpty()) {
+                append(" · 目标 ")
+                append(event.targetSeats.joinToString(" / ") { "$it 号" })
+            }
+        }
+        val spoken = event.text?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let(::truncateClaimText)
+        return listOf(meta, spoken.orEmpty())
+            .filter { it.isNotEmpty() }
+            .joinToString(" · ")
+            .ifEmpty { "公开发言" }
+    }
+
+    /** 时间线里的自由文本上限：超过就截断加省略号。 */
+    private fun truncateClaimText(text: String): String =
+        if (text.length <= MAX_CLAIM_TEXT_LENGTH) {
+            text
+        } else {
+            text.take(MAX_CLAIM_TEXT_LENGTH) + "…"
+        }
 
     /** 角色名中文标签（仅供时间线展示；其余领域层不产出 UI 文案，见 D6）。 */
     private fun roleLabel(roleName: String): String = when (roleName) {
