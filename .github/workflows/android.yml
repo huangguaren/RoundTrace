@@ -19,8 +19,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
+      - name: Remove CN mirrors for CI (use official repos)
+        run: |
+          sed -i 's|maven.aliyun.com|dl.google.com|g' settings.gradle.kts || true
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --refresh-dependencies
       - name: Run lint
         run: ./gradlew :app:lintDebug --no-daemon
       - name: Build debug APK
