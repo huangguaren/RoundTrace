@@ -77,6 +77,19 @@ class RecordViewModel(
     /** 恢复编辑草稿时发现目标已失效。 */
     private val editInvalidatedFlow = MutableStateFlow(false)
 
+    /**
+     * 「一次提交正在写库」。
+     *
+     * **不能拿 `saveStatus == SAVING` 兼任并发闸门**（F1）：草稿自动保存（`persistDraftNow`）
+     * 与事件提交共用同一个 `saveStatus`，于是「选完队员马上点确认」时，
+     * 提交会被草稿保存的 SAVING 窗口静默吞掉——用户以为保存成功，事件其实没写进库。
+     * 现在两者彻底分开：`saveStatus` 只用于展示，本标记才是提交的闸门。
+     */
+    private var isCommitting = false
+
+    /** [isCommitting] 的 UI 投影：只用于禁用提交按钮，不参与任何并发判断。 */
+    private val commitInFlightFlow = MutableStateFlow(false)
+
     private var draftSaveJob: Job? = null
 
     /**
@@ -98,7 +111,8 @@ class RecordViewModel(
             undoFeedbackFlow,
             editSessionFlow,
             commitResultFlow,
-            editInvalidatedFlow
+            editInvalidatedFlow,
+            commitInFlightFlow
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             buildUiState(
@@ -108,7 +122,8 @@ class RecordViewModel(
                 undoFeedback = values[3] as UndoFeedback?,
                 editSession = values[4] as EditSession?,
                 commitResult = values[5] as RecordCommitResult?,
-                editTargetInvalidated = values[6] as Boolean
+                editTargetInvalidated = values[6] as Boolean,
+                commitInFlight = values[7] as Boolean
             )
         }
             .catch { throwable ->
@@ -263,7 +278,11 @@ class RecordViewModel(
         viewModelScope.launch {
             saveStatusFlow.value = SaveStatus.SAVING
             val result = runCatchingCancellable { repository.saveDraft(matchId, key, json) }
-            saveStatusFlow.value = if (result.isSuccess) SaveStatus.SAVED else SaveStatus.FAILED
+            // 提交在飞时，草稿保存的收尾**不得**覆盖提交的展示状态：
+            // 草稿写完就显示「已保存」，正是 F1 里「用户以为保存成功」的一半原因。
+            if (!isCommitting) {
+                saveStatusFlow.value = if (result.isSuccess) SaveStatus.SAVED else SaveStatus.FAILED
+            }
         }
     }
 
@@ -465,40 +484,50 @@ class RecordViewModel(
      * 3. 成功后才清草稿、退出编辑态、发 `Succeeded`（UI 据此关弹窗）。
      */
     private fun commit(event: MatchEvent, editTargetEventId: EventId?) {
-        if (saveStatusFlow.value == SaveStatus.SAVING) return
+        // 防重复提交：判据是「有一次提交在飞」，**不是** saveStatus。
+        // 若看 saveStatus，草稿自动保存的 SAVING 窗口会把这次提交直接吞掉（F1）。
+        if (isCommitting) return
+        isCommitting = true
+        commitInFlightFlow.value = true
         viewModelScope.launch {
-            saveStatusFlow.value = SaveStatus.SAVING
-            val result = runCatchingCancellable {
-                if (editTargetEventId != null) {
-                    repository.reviseEvent(matchId, editTargetEventId, event)
-                } else {
-                    repository.appendEvent(matchId, event)
+            try {
+                saveStatusFlow.value = SaveStatus.SAVING
+                val result = runCatchingCancellable {
+                    if (editTargetEventId != null) {
+                        repository.reviseEvent(matchId, editTargetEventId, event)
+                    } else {
+                        repository.appendEvent(matchId, event)
+                    }
                 }
-            }
-            val appendResult = result.getOrNull()
-            val success = result.isSuccess && appendResult?.isSuccess == true
+                val appendResult = result.getOrNull()
+                val success = result.isSuccess && appendResult?.isSuccess == true
 
-            if (!success) {
-                saveStatusFlow.value = SaveStatus.FAILED
-                commitResultFlow.value = RecordCommitResult.Failed(
-                    reason = appendResult?.error?.name ?: "WRITE_FAILED"
+                if (!success) {
+                    saveStatusFlow.value = SaveStatus.FAILED
+                    commitResultFlow.value = RecordCommitResult.Failed(
+                        reason = appendResult?.error?.name ?: "WRITE_FAILED"
+                    )
+                    return@launch
+                }
+
+                saveStatusFlow.value = SaveStatus.SAVED
+                editSessionFlow.value = null
+                editInvalidatedFlow.value = false
+
+                // 事件已落库 → 清空本轮表单内容；任务开始事件不保留队长（新任务重选）
+                val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
+                draftFlow.value = ProposalDraft(
+                    leaderSeat = if (keepLeader) draftFlow.value.leaderSeat else null
                 )
-                return@launch
+                draftTouchedByUser = false
+                runCatching { repository.clearDraft(matchId, DRAFT_KEY) }
+                runCatching { repository.clearDraft(matchId, DRAFT_KEY_EDIT) }
+                commitResultFlow.value = RecordCommitResult.Succeeded
+            } finally {
+                // 协程被取消（页面销毁）时也要放闸，否则这一局再也提交不了
+                isCommitting = false
+                commitInFlightFlow.value = false
             }
-
-            saveStatusFlow.value = SaveStatus.SAVED
-            editSessionFlow.value = null
-            editInvalidatedFlow.value = false
-
-            // 事件已落库 → 清空本轮表单内容；任务开始事件不保留队长（新任务重选）
-            val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
-            draftFlow.value = ProposalDraft(
-                leaderSeat = if (keepLeader) draftFlow.value.leaderSeat else null
-            )
-            draftTouchedByUser = false
-            runCatching { repository.clearDraft(matchId, DRAFT_KEY) }
-            runCatching { repository.clearDraft(matchId, DRAFT_KEY_EDIT) }
-            commitResultFlow.value = RecordCommitResult.Succeeded
         }
     }
 
@@ -659,7 +688,8 @@ class RecordViewModel(
         undoFeedback: UndoFeedback?,
         editSession: EditSession? = null,
         commitResult: RecordCommitResult? = null,
-        editTargetInvalidated: Boolean = false
+        editTargetInvalidated: Boolean = false,
+        commitInFlight: Boolean = false
     ): RecordUiState {
         if (bundle == null) {
             return RecordUiState(isLoading = false, errorMessage = "对局不存在或已被删除")
@@ -788,6 +818,7 @@ class RecordViewModel(
             sheetFailThreshold = sheetFailThreshold,
             commitResult = commitResult,
             editTargetInvalidated = editTargetInvalidated,
+            commitInFlight = commitInFlight,
             errorMessage = null
         )
     }

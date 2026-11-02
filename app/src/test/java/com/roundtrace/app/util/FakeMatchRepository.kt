@@ -76,6 +76,14 @@ class FakeMatchRepository(
     /** 置 true 后下一次 append/revise 返回 WRITE_FAILED（模拟写库失败，用于「失败保留输入」用例）。 */
     var failNextWrite: Boolean = false
 
+    /**
+     * 可选闸门：非空时 [saveDraft] 会挂起直到它完成。
+     *
+     * 用途：把「草稿自动保存占住 SAVING 窗口」这个瞬间**固定住**，
+     * 用来验证此时点提交不会被静默吞掉（F1）。
+     */
+    var saveDraftGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override fun observeSummaries(filter: MatchStatusFilter): Flow<List<MatchSummary>> =
         eventsState.map { listOf(buildSummary(it)) }
 
@@ -194,6 +202,7 @@ class FakeMatchRepository(
     }
 
     override suspend fun saveDraft(matchId: MatchId, screenKey: String, json: String) {
+        saveDraftGate?.await()
         drafts[screenKey] = json
         savedDrafts += json
     }

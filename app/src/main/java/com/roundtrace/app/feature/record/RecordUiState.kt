@@ -203,6 +203,13 @@ data class RecordUiState(
      * 此时**保留用户输入**（不静默丢弃），只是不进入编辑态，由 UI 提示「原记录已变更，请重新加载」。
      */
     val editTargetInvalidated: Boolean = false,
+    /**
+     * 有一次**事件提交**正在写库（F1）。
+     *
+     * 与 [saveStatus] 分开：`saveStatus == SAVING` 里还包含「草稿自动保存」，
+     * 拿它禁用提交按钮会让用户在草稿保存的那几百毫秒里点不动确认。
+     */
+    val commitInFlight: Boolean = false,
     val errorMessage: String? = null
 ) {
 
@@ -214,9 +221,14 @@ data class RecordUiState(
     val isEditing: Boolean
         get() = editSession != null
 
-    /** 保存中：UI 必须禁用提交按钮（防重复提交的第一道闸）。 */
+    /**
+     * 保存中：UI 必须禁用提交按钮（防重复提交的第一道闸）。
+     *
+     * 只看 [commitInFlight]，**不看** `saveStatus`：后者包含草稿自动保存，
+     * 用它禁用按钮会让「选完队员马上点确认」点不动（F1）。
+     */
     val isSaving: Boolean
-        get() = saveStatus == SaveStatus.SAVING
+        get() = commitInFlight
 
     /** 队伍是否已选满（仅用于 UI 提示，不是规则判定）。 */
     val teamIsFull: Boolean
