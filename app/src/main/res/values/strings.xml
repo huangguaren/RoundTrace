@@ -93,6 +93,7 @@
     <string name="create_seat_name_title">%1$d 号座位名字</string>
     <string name="create_seat_pick_avatar">选择头像</string>
     <string name="create_seat_clear_avatar">移除头像</string>
+    <string name="create_avatar_persist_failed">未能取得该图片的长期读取授权，重启后可能显示不出来；可重新选取。</string>
     <string name="create_title_label">给这局起个名字（留空自动生成）</string>
     <string name="create_submit">创建对局</string>
     <string name="create_error_title">无法创建对局</string>
@@ -143,6 +144,11 @@
     <string name="proposal_sheet_title">第 %1$d 任务 · 组队提案</string>
     <string name="proposal_sheet_leader_section">选择队长</string>
     <string name="proposal_sheet_team_section">选择上车队员</string>
+    <string name="proposal_sheet_choose_leader_hint">先点选队长，再选择上车成员。</string>
+    <string name="proposal_sheet_choose_team_hint">点击座位切换是否上车，队长也可以上车。星标表示队长，选中底色表示上车。</string>
+    <string name="proposal_sheet_change_leader">更换队长</string>
+    <string name="proposal_sheet_cancel_change_leader">取消更换</string>
+    <string name="proposal_sheet_change_leader_hint">点选新队长，已选上车成员保持不变。</string>
     <string name="proposal_sheet_submit">提交提案</string>
     <string name="proposal_sheet_save_draft">仅暂存</string>
     <string name="proposal_sheet_draft_saved">已暂存，尚未写入对局</string>
@@ -385,4 +391,5 @@
     <string name="detail_msg_imported">已导入：%1$d 人局 · %2$d 条事件</string>
     <string name="detail_msg_import_rejected">导入被拒绝：%1$s</string>
 
+    <string name="import_avatar_reference_hint">头像仅保存本机图片引用；没有原设备读取授权时，请重新选择头像。</string>
 </resources>

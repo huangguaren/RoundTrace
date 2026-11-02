@@ -37,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +56,7 @@ import com.roundtrace.app.core.model.RoleId
 import com.roundtrace.app.core.ui.issueText
 import com.roundtrace.app.core.ui.roleDisplayName
 import com.roundtrace.app.core.ui.component.SeatPicker
+import com.roundtrace.app.core.ui.avatar.SeatAvatarImage
 import com.roundtrace.app.core.ui.theme.ButtonShape
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.LocalExtendedColors
@@ -510,18 +512,34 @@ private fun SeatLayoutStep(
     onSeatAvatarChange: (Int, String?) -> Unit
 ) {
     val context = LocalContext.current
-    var editingSeat by remember { mutableStateOf<Int?>(null) }
-    var editingText by remember { mutableStateOf("") }
+    var editingSeat by rememberSaveable { mutableStateOf<Int?>(null) }
+    var editingText by rememberSaveable { mutableStateOf("") }
+    // 文件选择器跨页面重建返回时，结果仍归属发起选图的座位。
+    var avatarRequestSeat by rememberSaveable { mutableStateOf<Int?>(null) }
+    // RT-009：拿不到持久读取授权时提示用户（头像在重启后可能失效，可重新选取）
+    var avatarPersistFailedSeats by rememberSaveable { mutableStateOf(emptyList<Int>()) }
     val avatarPicker = rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        // RT-009：原用 GetContent()——它**不保证**可持久读取授权，
+        // 原异常被吞掉时会表现为「选完头像、重启后读不到」。OpenDocument
+        // 支持申请持久授权；提供方仍可能拒绝，因此保留明确的失败提示。
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri: android.net.Uri? ->
+        val targetSeat = avatarRequestSeat
+        avatarRequestSeat = null
         uri?.let {
-            runCatching {
+            val persisted = runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
+            }.isSuccess
+            targetSeat?.let { seat ->
+                avatarPersistFailedSeats = if (persisted) {
+                    avatarPersistFailedSeats - seat
+                } else {
+                    (avatarPersistFailedSeats + seat).distinct()
+                }
+                onSeatAvatarChange(seat, it.toString())
             }
-            editingSeat?.let { s -> onSeatAvatarChange(s, it.toString()) }
         }
     }
 
@@ -635,38 +653,27 @@ private fun SeatLayoutStep(
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    if (avatarUri != null) {
-                        val bmp = remember(avatarUri) {
-                            runCatching {
-                                context.contentResolver.openInputStream(android.net.Uri.parse(avatarUri))?.use {
-                                    android.graphics.BitmapFactory.decodeStream(it)
-                                }
-                            }.getOrNull()
-                        }
-                        if (bmp != null) {
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                androidx.compose.foundation.Image(
-                                    bitmap = bmp.asImageBitmap(),
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                                )
-                                // 右下角数字角标
-                                Text(
-                                    text = seat.toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
-                                        .padding(horizontal = 5.dp, vertical = 2.dp)
-                                )
-                            }
-                        } else {
-                            SeatLabel(seat, seatNames[seat])
-                        }
-                    } else {
+                    // RT-010：主线程同步解码 → 共享组件（后台线程 + 采样 + 缓存）
+                    var avatarLoaded by remember { mutableStateOf(false) }
+                    SeatAvatarImage(
+                        uri = avatarUri,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        onLoadStateChange = { avatarLoaded = it }
+                    ) {
                         SeatLabel(seat, seatNames[seat])
+                    }
+                    if (avatarLoaded) {
+                        // 右下角数字角标
+                        Text(
+                            text = seat.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
                     }
                 }
             }
@@ -689,14 +696,28 @@ private fun SeatLayoutStep(
                             horizontalArrangement = Arrangement.spacedBy(Dimens.Spacing8),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TextButton(onClick = { avatarPicker.launch("image/*") }) {
+                            TextButton(onClick = {
+                                avatarRequestSeat = seat
+                                avatarPicker.launch(arrayOf("image/*"))
+                            }) {
                                 Text(stringResource(R.string.create_seat_pick_avatar))
                             }
                             if (seatAvatars[seat] != null) {
-                                TextButton(onClick = { onSeatAvatarChange(seat, null) }) {
+                                TextButton(onClick = {
+                                    onSeatAvatarChange(seat, null)
+                                    avatarPersistFailedSeats = avatarPersistFailedSeats - seat
+                                }) {
                                     Text(stringResource(R.string.create_seat_clear_avatar))
                                 }
                             }
+                        }
+                        // RT-009：持久授权拿不到时明确告知，而不是静默吞掉异常
+                        if (seat in avatarPersistFailedSeats) {
+                            Text(
+                                text = stringResource(R.string.create_avatar_persist_failed),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
                         }
                     }
                 },

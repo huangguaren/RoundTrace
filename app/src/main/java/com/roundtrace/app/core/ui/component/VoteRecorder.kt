@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
 import com.roundtrace.app.core.model.ProposalDecision
 import com.roundtrace.app.core.model.TeamVoteChoice
+import com.roundtrace.app.core.ui.avatar.SeatAvatarImage
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.PillShape
 import com.roundtrace.app.core.ui.theme.SeatShape
@@ -215,42 +216,14 @@ private fun VoteSeatCell(
         contentColor = content
     ) {
         Box(contentAlignment = Alignment.Center) {
-            if (avatarUri != null) {
-                val context = androidx.compose.ui.platform.LocalContext.current
-                val bmp = remember(avatarUri) {
-                    runCatching {
-                        context.contentResolver.openInputStream(android.net.Uri.parse(avatarUri))?.use {
-                            android.graphics.BitmapFactory.decodeStream(it)
-                        }
-                    }.getOrNull()
-                }
-                if (bmp != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                    )
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = androidx.compose.ui.graphics.Color.White,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f))
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
-                    )
-                } else {
-                    Column(
-                        modifier = Modifier.padding(Dimens.Spacing4),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(text = seat.toString(), style = MaterialTheme.typography.displaySmall, color = content)
-                        Text(text = label, style = MaterialTheme.typography.labelMedium, color = content)
-                    }
-                }
-            } else {
+            // RT-010：主线程同步解码 → 共享组件（后台线程 + 采样 + 缓存）
+            var avatarLoaded by remember { mutableStateOf(false) }
+            SeatAvatarImage(
+                uri = avatarUri,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                onLoadStateChange = { avatarLoaded = it }
+            ) {
                 Column(
                     modifier = Modifier.padding(Dimens.Spacing4),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -259,6 +232,17 @@ private fun VoteSeatCell(
                     Text(text = seat.toString(), style = MaterialTheme.typography.displaySmall, color = content)
                     Text(text = label, style = MaterialTheme.typography.labelMedium, color = content)
                 }
+            }
+            if (avatarLoaded) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = androidx.compose.ui.graphics.Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                )
             }
         }
     }

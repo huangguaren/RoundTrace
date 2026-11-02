@@ -19,7 +19,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -31,6 +34,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
+import com.roundtrace.app.core.ui.avatar.SeatAvatarImage
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.SeatShape
 
@@ -145,43 +149,15 @@ private fun SeatCell(
         }
     ) {
         Box(contentAlignment = Alignment.Center) {
-            if (avatarUri != null) {
-                val context = androidx.compose.ui.platform.LocalContext.current
-                val bmp = remember(avatarUri) {
-                    runCatching {
-                        context.contentResolver.openInputStream(android.net.Uri.parse(avatarUri))?.use {
-                            android.graphics.BitmapFactory.decodeStream(it)
-                        }
-                    }.getOrNull()
-                }
-                if (bmp != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                    )
-                    // 右下角数字角标
-                    Text(
-                        text = seat.toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = scheme.onPrimary,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .background(scheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
-                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                    )
-                } else {
-                    Text(
-                        text = seatLabel?.takeIf { it.isNotBlank() } ?: seat.toString(),
-                        style = if (seatLabel?.isNotBlank() == true)
-                            MaterialTheme.typography.titleMedium
-                        else
-                            MaterialTheme.typography.displaySmall,
-                        color = content.copy(alpha = alpha)
-                    )
-                }
-            } else {
+            // RT-010：主线程同步解码 → 共享组件（后台线程 + 采样 + 缓存）
+            var avatarLoaded by remember { mutableStateOf(false) }
+            SeatAvatarImage(
+                uri = avatarUri,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                onLoadStateChange = { avatarLoaded = it }
+            ) {
+                // 占位：座位名优先，否则座位号
                 Text(
                     text = seatLabel?.takeIf { it.isNotBlank() } ?: seat.toString(),
                     style = if (seatLabel?.isNotBlank() == true)
@@ -189,6 +165,18 @@ private fun SeatCell(
                     else
                         MaterialTheme.typography.displaySmall,
                     color = content.copy(alpha = alpha)
+                )
+            }
+            if (avatarLoaded) {
+                // 右下角数字角标
+                Text(
+                    text = seat.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.onPrimary,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .background(scheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
                 )
             }
             if (badgeLabel != null) {
