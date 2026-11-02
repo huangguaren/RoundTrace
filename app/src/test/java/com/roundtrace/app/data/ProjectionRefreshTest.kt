@@ -222,9 +222,10 @@ class ProjectionRefreshTest {
         assertEquals("前置条件：列已被改成过期结论", MatchStatus.IN_PROGRESS, storedStatus(matchId))
         assertEquals("前置条件：时间戳已被改旧", oldTimestamp, storedUpdatedAt(matchId))
 
-        val processed = repository.recomputeAllProjections()
+        val result = repository.recomputeAllProjections()
 
-        assertEquals("应处理 1 局", 1, processed)
+        assertEquals("应处理 1 局", 1, result.processed)
+        assertTrue("全部成功时 isComplete 必须为 true", result.isComplete)
         assertEquals(
             "刷新后列必须等于重放结论",
             derived,
@@ -268,9 +269,10 @@ class ProjectionRefreshTest {
         makeStaleProjection(first, MatchStatus.IN_PROGRESS)
         makeStaleProjection(second, MatchStatus.FINISHED_EVIL)
 
-        val processed = repository.recomputeAllProjections()
+        val result = repository.recomputeAllProjections()
 
-        assertEquals("应处理 2 局", 2, processed)
+        assertEquals("应处理 2 局", 2, result.processed)
+        assertTrue("两局都健康，isComplete 必须为 true", result.isComplete)
         assertEquals(
             "A 局应被刷成三次失败",
             MatchStatus.FINISHED_EVIL,
@@ -297,7 +299,9 @@ class ProjectionRefreshTest {
 
     @Test
     fun refreshOnEmptyDatabaseReturnsZero() = runBlocking {
-        assertEquals("空库应返回 0", 0, repository.recomputeAllProjections())
+        val result = repository.recomputeAllProjections()
+        assertEquals("空库应返回 0", 0, result.processed)
+        assertTrue("空库也算全部成功", result.isComplete)
     }
 
     @Test
@@ -313,5 +317,67 @@ class ProjectionRefreshTest {
             storedStatus(matchId)
         )
         assertTrue("且不得改动时间戳", storedUpdatedAt(matchId) == oldTimestamp)
+    }
+
+    // ————————————————————————————————————————————————————————
+    // 失败必须被上报（修正「失败当成成功」的缺陷）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 关键回归：**单局刷新失败时，必须返回 `isComplete = false`**。
+     *
+     * 上一版实现是「逐局 runCatching → 全部跑完就写标记」，等于把失败当成成功：
+     * 某局重放抛异常时，调用方照样写版本标记 → 该局**永久**停在旧结论，且没有任何信号。
+     *
+     * 现在调用方（`AppContainer`）以 `isComplete` 决定是否写标记，所以这里断言的就是那条契约。
+     */
+    @Test
+    fun failedMatchIsReportedAndPreventsMarker() = runBlocking {
+        val healthy = createMatch("健康对局")
+        val broken = createMatch("损坏对局")
+        appendFailedQuest(healthy, 1, listOf(1, 2, 3), tag = "h")
+        appendFailedQuest(healthy, 2, listOf(1, 2, 3, 4), tag = "h")
+        appendFailedQuest(healthy, 3, listOf(4, 6, 7, 8), tag = "h")
+
+        // 让 broken 局的事件表里出现一条「解不开」的行：未知 eventType → codec.decode 抛异常
+        rawDb().execSQL(
+            "INSERT INTO match_events (id, matchId, occurredOrder, logicalPosition, revisionSeq, " +
+                "phaseKey, eventType, payloadVersion, payloadJson, visibility, recordedAt, " +
+                "supersedesId, retracted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            arrayOf(
+                "broken-e1", broken.raw, 1, 1, 0,
+                "QUEST_1", "NOT_A_REAL_TYPE", 1, "{}",
+                "PUBLIC", 1L, null, 0
+            )
+        )
+
+        // 两局都伪造成过期结论
+        makeStaleProjection(healthy, MatchStatus.IN_PROGRESS)
+        makeStaleProjection(broken, MatchStatus.IN_PROGRESS)
+
+        val result = repository.recomputeAllProjections()
+
+        assertEquals("健康局应被刷新", 1, result.processed)
+        assertEquals("失败局应被上报 1 条", 1, result.failed.size)
+        assertEquals("上报的必须正是那一局", broken.raw, result.failed.first().raw)
+        assertTrue(
+            "**有失败时 isComplete 必须为 false** —— 调用方据此不写版本标记、下次重试",
+            !result.isComplete
+        )
+        assertEquals(
+            "健康局的结论仍必须被刷新（不能因别局失败而整批放弃）",
+            replayDerivedStatus(healthy),
+            storedStatus(healthy)
+        )
+        assertEquals(
+            "失败局保持原样（不被改坏）",
+            MatchStatus.IN_PROGRESS,
+            storedStatus(broken)
+        )
+        assertEquals(
+            "失败局的时间戳也不得被动",
+            oldTimestamp,
+            storedUpdatedAt(broken)
+        )
     }
 }

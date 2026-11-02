@@ -88,9 +88,9 @@ interface MatchRepository {
      * - 逐局复用与写入路径相同的重放逻辑，不另写一套；
      * - 幂等：重复执行结果相同。
      *
-     * @return 实际处理的对局数
+     * @return 成功/失败明细，见 [ProjectionRefreshResult]
      */
-    suspend fun recomputeAllProjections(): Int
+    suspend fun recomputeAllProjections(): ProjectionRefreshResult
 }
 
 /**
@@ -123,6 +123,26 @@ data class AppendResult(
     /** 是否存在阻断级问题（UI 应提示但**不**回滚）。 */
     val hasBlockingIssue: Boolean
         get() = issues.any { it.isBlocking }
+}
+
+/**
+ * 一次性投影刷新的结果。
+ *
+ * 为什么要返回明细而不是一个 `Int`：上一版「逐局 runCatching，全部跑完就写标记」
+ * 等于**把失败当成成功** —— 某局重放抛异常时标记照样写成 1，该局永久停在旧结论且无任何信号。
+ * 调用方必须能区分「全部成功」与「有失败」，否则「失败下次重试」这条就不成立。
+ *
+ * @param processed 成功刷新的局数
+ * @param failed 刷新失败的对局 id（按发现顺序）；非空即 [isComplete] 为 false
+ */
+data class ProjectionRefreshResult(
+    val processed: Int,
+    val failed: List<MatchId>
+) {
+
+    /** 是否**全部**成功。只有为 true 时调用方才允许写版本标记。 */
+    val isComplete: Boolean
+        get() = failed.isEmpty()
 }
 
 /** 仓储错误（不抛异常，用返回值表达）。 */

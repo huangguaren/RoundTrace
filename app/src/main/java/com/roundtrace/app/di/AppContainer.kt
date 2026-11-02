@@ -107,13 +107,22 @@ class AppContainer(appContext: Context) {
                 if (version >= SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION) {
                     return@runCatching
                 }
-                val processed = matchRepository.recomputeAllProjections()
+                val result = matchRepository.recomputeAllProjections()
+                if (!result.isComplete) {
+                    // **不写标记** → 下次启动重试。宁可重复扫描，不可静默停在旧结论。
+                    Log.w(
+                        PROJECTION_TAG,
+                        "投影刷新未完成（成功 ${result.processed} / 失败 ${result.failed.size}），" +
+                            "不写版本标记，下次启动重试。失败=${result.failed.map { it.raw }}"
+                    )
+                    return@runCatching
+                }
                 settingsRepository.setProjectionOrderModelVersion(
                     SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION
                 )
                 Log.i(
                     PROJECTION_TAG,
-                    "投影顺序模型升级完成：重算 $processed 局（旧版本 $version → " +
+                    "投影顺序模型升级完成：重算 ${result.processed} 局（旧版本 $version → " +
                         "${SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION}）"
                 )
             }.onFailure { throwable ->

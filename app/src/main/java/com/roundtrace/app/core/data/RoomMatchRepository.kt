@@ -49,6 +49,9 @@ import kotlinx.coroutines.flow.map
  * `COALESCE(MAX(occurredOrder),0)+1` 取值后**通过 [EventCodec.encode] 的 `occurredOrder` 参数落列**，
  * 从而保证「事件的游戏内顺序」只由仓储盖章，不会被领域层误填。
  */
+/** 与 `RoundTraceDatabase` 的自检/备份共用一个 tag，方便抓一次完整启动日志。 */
+private const val DB_LOG_TAG = "RoundTraceDb"
+
 class RoomMatchRepository(
     private val database: RoundTraceDatabase,
     private val gameRulesRegistry: GameRulesRegistry,
@@ -437,17 +440,44 @@ class RoomMatchRepository(
     /**
      * 逐局重算 `matches.status`，复用 [recomputeProjectionLocked] 的重放逻辑。
      *
-     * 刻意**不分事务包住所有对局**：单局失败不应让整批回滚（否则永远刷不完）。
-     * 调用方（`AppContainer`）在全部成功后才写版本标记，失败则下次启动重试。
+     * ## 失败处理（重要取舍）
+     *
+     * 刻意**不分事务包住所有对局**：单局失败不应让整批回滚，否则永远刷不完。
+     * 但**失败必须被上报**：调用方只有在 [ProjectionRefreshResult.isComplete] 时才写版本标记，
+     * 有失败就下次启动重扫。
+     *
+     * 代价（有意接受）：**只要存在一局永久损坏的数据，标记就永远写不上，每次启动都会全量重扫。**
+     * 这是「宁可重复扫描，不可静默错误」的选择——重扫是纯派生计算、幂等、不改 `updatedAt`，
+     * 对局数在几十级别时成本可忽略；而静默停在旧结论是用户永远发现不了的错误。
      */
-    override suspend fun recomputeAllProjections(): Int {
+    override suspend fun recomputeAllProjections(): ProjectionRefreshResult {
         val ids = matchDao.listAllIds()
         var processed = 0
+        val failed = mutableListOf<MatchId>()
+
         ids.forEach { rawId ->
-            runCatching { recomputeProjectionLocked(MatchId(rawId), touchUpdatedAt = false) }
+            val matchId = MatchId(rawId)
+            runCatching { recomputeProjectionLocked(matchId, touchUpdatedAt = false) }
                 .onSuccess { processed++ }
+                .onFailure { throwable ->
+                    // 记录到具体对局 + 异常类型，便于定位「哪一局的数据坏了」
+                    failed += matchId
+                    android.util.Log.w(
+                        DB_LOG_TAG,
+                        "投影刷新失败：matchId=$rawId, 异常=${throwable::class.java.simpleName}",
+                        throwable
+                    )
+                }
         }
-        return processed
+
+        if (failed.isNotEmpty()) {
+            android.util.Log.w(
+                DB_LOG_TAG,
+                "投影刷新未完成：成功 $processed / 失败 ${failed.size}；" +
+                    "不写版本标记，下次启动重试。失败对局=${failed.map { it.raw }}"
+            )
+        }
+        return ProjectionRefreshResult(processed = processed, failed = failed)
     }
 
     // ————————————————————————————————————————————————————————
