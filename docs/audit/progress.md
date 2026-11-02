@@ -517,3 +517,43 @@ v4 属于**预发布版本，允许就地修正**；`4.json` 不变（这是纯�
 `matchId + eventId + supersedesId`，**绝不自动修数据**——自动改历史比不修更危险。
 查询与日志拆成两个函数，数据面可以直接断言。
 
+
+---
+
+## 阶段 E 收尾（2026-11-02，主理人接手执行）
+
+工程师在阶段 E 途中因 429 频率限制中断（重置时间 2026-11-03 08:18），仅完成 `ARCHITECTURE.md §2.3.1` 一节。
+剩余工作（文档统一、版本号、发布说明）由主理人接手完成，内容与工程师既定清单一致：
+
+| 项 | 状态 |
+|---|---|
+| E-1 `versionCode 4` / `versionName 0.4.0` | ✅ |
+| E-2 README 统一（356 用例、B34 计数口径、目录树、已知限制、文档索引） | ✅ |
+| E-2 ARCHITECTURE（双序模型 §2.3.1 沿用工程师原稿 + §7.3 可见性唯一出口 + DB 版本 4） | ✅ |
+| E-2 decisions B36（v4 预发布可就地修正）/ B37（可编辑限定 3 类） | ✅ |
+| E-2 TEST_REPORT 头部结论更新 + §12 审计轮实测增补 | ✅ |
+| E-2 `docs/audit/final-audit.md`（RT-001~031 终态 + N-* 新发现 + 有意不合并项） | ✅ |
+| E-3 删除 `TimelineBuilder.claimDetail` 的不可达 `ifEmpty` 分支 | ✅ |
+| E-4 `docs/release/v0.4.0.md`（数据升级 / 行为变化 / 回退说明 / 未验证项） | ✅ |
+
+### 全流程提交（本地，未 push）
+
+| 阶段 | commit | 内容 |
+|---|---|---|
+| Phase 0 | `9f34e61`、`cc50b4e` | 基线文档 + lint 错误修复（splash 属性迁 values-v31） |
+| A | `fe6c408` | 草稿恢复（`draftTouchedByUser` 判据） |
+| B-1/B-2 | `a24be16`、`3d8ea46` | 逻辑位置读路径 + 一次性投影刷新 |
+| 任务 0 | `856cd38` | 投影刷新不再吞异常 |
+| C-1/C-2 | `5f11b30`、`ec83007` | 事务化修订 + 界面按 eventId 编辑 |
+| F1–F5 | `5bdb1ac`、`5f13775`、`9a7fac1`、`c401951`、`caf4fdf` | 提交闸门 / 迁移 CTE 分组 / 备份 busy / 时间线原文 / 标记纯函数 |
+| 审计验收 | `35b1b30` | QA 对抗包 11 类 48 条 + 阶段 D 报告 |
+| Phase E | 本次提交 | 文档统一 + versionCode 4 + 发布说明 |
+
+### 终态实测
+
+`--rerun-tasks` 全量：**52 个测试类 / 356 用例 / 0 失败 / 0 跳过**；`lintDebug` 0 error；`assembleDebug` 通过；
+`app/schemas` 无变更。
+
+### 仍未验证（NOT RUN）
+
+`connectedDebugAndroidTest`（含 `MigrationV3ToV4Test`）、真机杀进程恢复、WAL busy 真机分支、Compose 像素级验证。

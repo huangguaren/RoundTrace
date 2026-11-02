@@ -271,7 +271,9 @@ object TimelineBuilder {
         return listOf(meta, spoken.orEmpty())
             .filter { it.isNotEmpty() }
             .joinToString(" · ")
-            .ifEmpty { "公开发言" }
+            // `meta` 来自 `claimTypeLabel(...)`，恒非空，所以本结果恒非空。
+            // 原先这里有个 `ifEmpty { "公开发言" }` 兜底——那是不可达分支，
+            // 留着会让读代码的人以为「可能没有类型标签」，故删除（QA P3 建议）。
     }
 
     /** 时间线里的自由文本上限：超过就截断加省略号。 */

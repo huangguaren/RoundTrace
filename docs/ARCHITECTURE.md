@@ -315,11 +315,36 @@ data class MatchSummary(
 3. **`occurredOrder` 只能由 Repository 分配**（`SELECT COALESCE(MAX(occurredOrder),0)+1`，同一事务内）。UI/领域构造时填 `0`。
 4. `null` = 未知，`0` = 已知为零，**两者不可互换**。
 
+#### 2.3.1 事件顺序模型（RT-003，v4 起）
+
+**两个顺序，两种语义，不可混用**：
+
+| 概念 | 落库列 | 领域字段 | 含义 | 谁写 |
+|---|---|---|---|---|
+| 写入序号 | `match_events.occurredOrder` | —（`AppendResult.occurredOrder` 与之同义） | 该行**落库时**分到的序号，永远递增；修订会产生更大的写入序号 | Repository（`COALESCE(MAX,0)+1`） |
+| 逻辑位置 | `match_events.logicalPosition` | `MatchEvent.occurredOrder`（**读路径已切**） | 事件在时间线上的站位；修订沿 `supersedesId` 链**继承**原位置，所以「改一条旧记录」不会把条目甩到末尾 | `EventCodec.decode` 映射 |
+| 版本号 | `match_events.revisionSeq` | —（`MatchEvent` 无此字段，实体层去重用） | 同一逻辑位置上的第几版，0 = 原始版本 | DAO `appendWithSlot` / `reviseWithSlot` |
+
+三条要点：
+
+1. **读路径已经切到逻辑位置**（RT-003 Step 3）：DAO 的读查询是
+   `ORDER BY logicalPosition ASC, revisionSeq ASC`，`EventCodec.decode` 把 `logicalPosition`
+   灌进领域 `occurredOrder`。因此**领域层与 UI 看到的 `occurredOrder` 就是逻辑位置**，
+   重放、时间线、导出的顺序天然一致。
+2. **`upTo` 是逻辑位置上界**：`ReplayEngine.replay(..., upTo)` 与
+   `TimelineBuilder.build(events, upTo)` 比较的都是这个已切换后的值，
+   所以「复盘选到第 N 条」能正确地把修订后的版本也纳入。
+3. **同一位置至多一条 `retracted = 0`**（INV-1）。实体层用 `revisionSeq` 去重，
+   启动自检 `warnOnDuplicateActivePositions` 只告警不修数据。
+
+> 历史包袱：v3 及以前只有一个 `occurredOrder` 列，同时承担「写入序号」与「时间线位置」，
+> 于是修订过的事件必然排到时间线末尾。这是 RT-003 的病灶；v4 拆列后不再存在。
+
 ```kotlin
 // core/model/MatchEvent.kt
 sealed interface MatchEvent {
     val eventId: EventId
-    val occurredOrder: Int          // 游戏内发生顺序（1,2,3...），权威排序键
+    val occurredOrder: Int          // **逻辑位置**（v4 读路径已切；列名沿用历史命名，见 §2.3.1）
     val recordedAt: Long            // 录入时刻 epoch millis UTC
     val visibility: EventVisibility
     val supersedesId: EventId?      // 被本事件修订/替代的旧事件 id（审计链）
@@ -847,7 +872,7 @@ P0 中该表**允许不使用**（复盘实时计算，简单优先）；存在�
 @Database(
     entities = [MatchEntity::class, ParticipantEntity::class, RoleAssignmentEntity::class,
                 MatchEventEntity::class, MatchDraftEntity::class, AnalysisReportEntity::class],
-    version = 1, exportSchema = true
+    version = 4, exportSchema = true   // v1→v2→v3→v4 迁移链；schema JSON 在 app/schemas/
 )
 abstract class RoundTraceDatabase : RoomDatabase() { /* 6 个 dao 抽象属性 */ }
 ```
@@ -1158,6 +1183,12 @@ data class NightKnowledge(
 
 ### 7.3 反剧透硬规则
 
+0. **可见性只有一个出口**：`core/replay/VisibleEventPolicy.forPerspective(events, mode, observerSeat)`。
+   `PUBLIC` 只保留 `visibility == PUBLIC` 的事件；`OBSERVER_AT_TIME` 额外保留「本人可见」的私有事件；
+   `GOD_AFTER_REVEAL` 保留全部。**任何消费事件的地方都不得自己写可见性判断**——
+   RT-005 的教训：`buildPublicFacts` / `claimLabels` / `analyzeAt` 三处各写一遍，
+   结果私有声称漏进公开视角；现在统一走策略，策略只管「谁」不管「何时」，时间过滤仍是独立一步。
+   私人笔记 `PrivateNoteAdded.availableFromOrder` 的时间特例（B31）不受此策略影响。
 1. `OBSERVER_AT_TIME` **永不**读取 `roleAssignments[*].revealState == REVEALED` 作为“当时已知”。它只读**夜间知识规则**（`RULESET_INITIAL`）。
 2. 观察者角色为结局后补录时，允许重建“他本来会看到什么”，但 `observerRoleIsReconstructed = true`，UI 必须显示「按规则重建的初始信息」标记。
 3. 公开声称一律 `FactKind.CLAIM` / `KnowledgeLabel.CLAIMED_*`，永不写入 `visibleRole`。

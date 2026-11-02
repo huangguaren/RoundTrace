@@ -554,3 +554,38 @@ UI 只能通过 `canOpenGodView` 进入（`PerspectiveSwitcher` 禁用态 + `Rep
 新票数与既有决议矛盾时，让 reducer 的 `DECISION_VOTE_CONFLICT` 浮出来、UI 提示复核，原决议保持不动。
 记录错了要改决议，走「撤销最近一条 + 重录」这条显式路径。
 `RecordEditSessionTest.editingVoteDoesNotTouchProposalDecision` 钉住这条。
+
+### B36. v4 为预发布版本，`MIGRATION_3_4` 允许就地修正（不升 v5）
+
+**背景**：审计 P1-1 发现 `MIGRATION_3_4` 的递归 CTE 未按 `matchId` 分组——
+`mB` 的事件若 `supersedesId` 指向 `mA` 的事件，会继承 `mA` 的链根位置，与 `mB` 自有事件撞位，
+破坏 INV-1（同一逻辑位置至多一条 active）。
+
+**为什么可以就地改迁移脚本**：v4 **从未对外发布**。远端 `origin/main` 仍停在 v0.3.0
+（`a6da7c4`，versionCode 3），没有任何用户数据库停在 v4，因此不存在「已按旧脚本迁移过的库」。
+所有真实用户都是**v3 直接升级到修正后的 v4**，迁移脚本只有一次生效机会——改在这一刻成本最低。
+
+**决策**：
+- 两条 CTE 的 JOIN 加 `AND child.matchId = chain.matchId`；跨局链按孤儿处理，回落为自身 `occurredOrder`；
+- **不升 v5**：`4.json` 未变（纯数据回填逻辑，不是 schema 变更），无需新增迁移；
+- 配套加一条**只读**启动诊断 `findCrossMatchSupersedes`：命中只 `Log.w` 打印
+  `matchId + eventId + supersedesId`，**绝不自动修数据**（自动改写历史事实比不修更危险）。
+
+**理由链**：RT-002 修复前 `reviseEvent` 只按 `eventId` 查、`sameMatch = true` 是硬编码断言而非校验，
+那段窗口里跨局链**能写进库**；所以这条不是纯理论。启动自检负责把存量情况暴露出来供人工判断。
+
+### B37. 历史事件可编辑范围限定 3 类（2026-11-02）
+
+**决策**：只有 `TEAM_PROPOSED`（组队提案）、`TEAM_VOTE_RECORDED`（组队投票）、
+`MISSION_RESOLVED`（任务结果）三类事件提供编辑入口，判据是**单一白名单**
+`RecordUiState.EDITABLE_EVENT_TYPES`（时间线点击、`openEdit()` 校验、`commit()` 都读它，
+不会出现「能点开、保存时报类型不支持」的分叉）。
+
+**`TEAM_PROPOSAL_RESOLVED`（通过/否决决议）只读**，理由：
+- 它是**现场既成事实**。若它也可编辑，「改票数导致决议矛盾」与「直接改决议」两条路径会互相打架，
+  事后无法判断哪个才是现场真实发生的；
+- 因此编辑投票后**不改同轮决议**：矛盾由 reducer 的 `DECISION_VOTE_CONFLICT` 浮出、UI 提示复核，
+  原决议事件保持不动；
+- 记录错了要改决议，走「撤销最近一条 + 重录」这条**显式**路径，不混进编辑流程。
+
+`QUEST_STARTED`（轮次锚点）、`PLAYER_CLAIMED`（语义事实）、`PRIVATE_NOTE_ADDED`（私人内容）同样只读。

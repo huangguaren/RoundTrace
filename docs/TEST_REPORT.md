@@ -1,10 +1,11 @@
 # RoundTrace 测试报告（TEST_REPORT）
 
-> 生成日期：2026-10-30（最后更新：M5 / T59–T65 完成后重跑）
-> 覆盖范围：**M0（T01–T10）+ M1（T11–T27）+ M2（T28–T43）+ M3（T44–T49）+ M4（T50–T58）+ M5（T59–T65）**
-> 结论：**`./gradlew :app:testDebugUnitTest` 全绿（208 个用例，0 失败）；`./gradlew :app:assembleDebug` 成功产出 APK（18.6 MB）。**
+> 生成日期：2026-10-30；**最后更新：2026-11-02（代码审计轮 A–E + F1–F5 完成后重跑）**
+> 覆盖范围：**M0（T01–T10）+ M1（T11–T27）+ M2（T28–T43）+ M3（T44–T49）+ M4（T50–T58）+ M5（T59–T65）**，以及 2026-10-31 起的代码审计轮（RT-001～RT-031）
+> 结论：**`./gradlew :app:testDebugUnitTest --rerun-tasks` 全绿（356 个用例 / 52 个测试类，0 失败、0 跳过）；`lintDebug` 0 error；`assembleDebug` 成功产出 APK。**
 > T43 的 Room 用例已通过 **Robolectric 在 JVM 上真实跑绿**（见 §8），仪器测试文件保留给真机使用。
-> 所有结论均为**本机实测**，命令与输出摘要见下。
+> 所有结论均为**本机实测**，命令与输出摘要见下；**本轮审计的完整证据见 `docs/audit/`**（baseline / progress / qa-phase1 / qa-phase-d / final-audit / migration-plan）。
+> 仪器测试（`connectedDebugAndroidTest`）**未执行**（无设备）——详见 §12.3。
 
 ---
 
@@ -464,3 +465,69 @@ TOTAL tests=134   failures=0
 |---|---|---|
 | `connectedDebugAndroidTest` | 未执行 | 无设备/模拟器 |
 | 真机 UI 手测（1.3x 字体、TalkBack、文件选择器、分享面板） | 未执行 | 无设备 |
+
+---
+
+## 12. 代码审计轮（2026-10-31 ～ 2026-11-02）实测增补
+
+> 本节是 2026-10-31 代码审计后的实测记录，方案见 `docs/IMPLEMENTATION_PLAN_AI_CODING.md`，
+> 阶段轨迹见 `docs/audit/progress.md`，独立验收见 `docs/audit/qa-phase1.md` 与 `docs/audit/qa-phase-d.md`，
+> RT 问题终态见 `docs/audit/final-audit.md`。
+
+### 12.1 执行命令与结果（2026-11-02，`HEAD=35b1b30` + 阶段 E）
+
+```bash
+export JAVA_HOME="/c/Users/HK-info/android-build/jdk"
+export ANDROID_HOME="/c/Users/HK-info/android-build/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+./gradlew :app:testDebugUnitTest --rerun-tasks :app:lintDebug :app:assembleDebug --console=plain
+```
+
+| 项 | 结果 |
+|---|---|
+| 单测 | **356 通过 / 0 失败 / 0 错误 / 0 跳过**，52 个测试类 |
+| lint | **0 error / 54 warning**（`UnusedAttribute`、`RedundantLabel` 等存量良性项） |
+| 构建 | `BUILD SUCCESSFUL` |
+| `app/schemas` 变更 | **无**（本轮全程未改 schema 结构；v4 的 `4.json` 自 Step 1 起未变） |
+| APK | `app/build/outputs/apk/debug/app-debug.apk`（versionCode 4 / 0.4.0） |
+
+### 12.2 本轮新增测试（审计对抗包 `app/src/test/java/com/roundtrace/app/audit/`）
+
+11 个测试类 / 48 条，全部为「自己造故障」的对抗性用例：
+
+| 测试类 | 条数 | 钉住的行为 |
+|---|---|---|
+| `CrossMatchWriteIsolationTest` | 5 | A 局不能 retract/revise B 局事件，失败后两表逐行不变 |
+| `StatusProjectionTest` | 4 | 撤销/修订/导入后 `matches.status` == 重放派生状态；`revealedAt` 不被覆盖 |
+| `PerspectiveLeakExitsTest` | 5 | 5 个可见性出口（publicFacts / labels / findings / 时间线 / 默认导出）不泄漏私有事件 |
+| `VisibilityLeakTest` | 9 | PUBLIC 不含私有声称；观察者本人可见；上帝视角全量可见 |
+| `MigrationAuditTest` | 5 | v3→v4 回填正确、跨局链回落、Room schema 校验通过 |
+| `BackupWalAuditTest` | 2 | WAL 有近期写入时备份完整；checkpoint busy 时不报成功 |
+| `RevisionIntegrityAuditTest` | 4 | 修订保持逻辑位置、事务回滚、并发只成功一次 |
+| `PerspectiveRevisionAuditTest` | 5 | 修订后隐私边界不破 |
+| `ExportImportRevisionAuditTest` | 2 | 修订后导出再导入顺序与胜负一致 |
+| `CommitDuringDraftSaveAuditTest` | 3 | 草稿保存窗口内提交**必须落库**；连点两次只写一条 |
+| `BackupOutcomeAuditTest` / `TimelineClaimTextAuditTest` | 4 | 备份结果三态与降级；声称原文进时间线且公开视角不可见 |
+
+### 12.3 未执行项（如实记录，NOT RUN）
+
+| 项 | 原因 | 风险 |
+|---|---|---|
+| `connectedDebugAndroidTest`（含 `MigrationV3ToV4Test`、`MatchDaoTest`） | 本机无设备/模拟器 | **`@ColumnInfo(defaultValue="0")` 与 `ALTER TABLE … DEFAULT 0` 的一致性只有间接证据**（`4.json` 实测 + 迁移后库可正常打开 + Room schema 校验通过）；严格校验需 `runMigrationsAndValidate`，有设备时**优先跑这一条** |
+| 真机杀进程后草稿/编辑目标恢复 | 无设备 | V11 以 ViewModel 重建 + 持久化草稿做代理验证 |
+| WAL checkpoint-busy 真机分支 | Robolectric 共享句柄造不出 busy | 已用注入式测试钉住判定分支（`UNKNOWN(busy=-1)` → `Incomplete`），真机行为未验 |
+| Compose 像素级 / 字体放大 / 系统分享面板 | 无设备 | UI 只有编译期与状态层保证 |
+
+### 12.4 本轮识别的环境噪声（不是代码缺陷，记录以免误判）
+
+1. **构建目录争用**：多进程同时操作同一个 `app/build` 会出现
+   `Unable to delete …/kotlin-classes/debug/com`、`Could not delete …/R.jar`、
+   `CorruptedException: kspCaches/symbolLookups`、以及「明明存在的符号报 unresolved」。
+   **判据：先怀疑环境，再怀疑代码**——`./gradlew clean` 后复跑即可；不要为此改生产代码。
+2. **数字口径**：本轮出现过「代码树 324 / 部分审计 345 / 全量 356」三套数。
+   权威口径是**当前 HEAD 的 `--rerun-tasks` 全量**；引用时必须写明口径，否则无法对账。
+3. **迁移测试无法在 JVM 跑**：`MigrationTestHelper` 从 instrumentation assets 读 schema，
+   Robolectric 下不可见，故 `MigrationV3ToV4Test` 落在 `androidTest`；JVM 侧由
+   `MigrationBackfillManualTest`（直连 SQLite 跑回填 SQL）承担回填正确性验证。
