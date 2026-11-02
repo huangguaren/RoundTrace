@@ -32,6 +32,7 @@ import java.time.Clock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CancellationException
 
 /**
  * Room 实现的 [MatchRepository]（ARCHITECTURE §8.8 / TASKS.md T35）。
@@ -324,6 +325,28 @@ class RoomMatchRepository(
         )
     }
 
+    override suspend fun retractAfterOrder(matchId: MatchId, logicalPosition: Int): AppendResult {
+        if (logicalPosition < 0) return failed(matchId, RepositoryError.WRITE_FAILED)
+        return try {
+            database.withTransaction {
+                if (matchDao.findById(matchId.raw) == null) {
+                    return@withTransaction failed(matchId, RepositoryError.NOT_FOUND)
+                }
+                val affected = eventDao.retractAfterOrder(matchId.raw, logicalPosition)
+                if (affected > 0) {
+                    eventDao.touchMatch(matchId.raw, now)
+                    recomputeProjectionLocked(matchId)
+                }
+                AppendResult(matchId, eventId = null, occurredOrder = null)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            android.util.Log.w(DB_LOG_TAG, "回滚失败，事务已撤销：matchId=${matchId.raw}", failure)
+            failed(matchId, RepositoryError.WRITE_FAILED)
+        }
+    }
+
     // ————————————————————————————————————————————————————————
     // 角色 / 状态
     // ————————————————————————————————————————————————————————
@@ -347,15 +370,47 @@ class RoomMatchRepository(
         }
     }
 
-    override suspend fun revealAllRoles(matchId: MatchId): AppendResult {
-        val entity = matchDao.findById(matchId.raw)
-            ?: return failed(matchId, RepositoryError.NOT_FOUND)
-        val committedAt = now
+    override suspend fun revealAllRoles(matchId: MatchId): AppendResult =
+        revealMatch(matchId, emptyList())
+
+    override suspend fun revealMatch(
+        matchId: MatchId,
+        assignments: List<RoleAssignment>
+    ): AppendResult = try {
         database.withTransaction {
+            val entity = matchDao.findById(matchId.raw)
+                ?: return@withTransaction failed(matchId, RepositoryError.NOT_FOUND)
+            if (assignments.map { it.seat }.distinct().size != assignments.size ||
+                assignments.any { it.seat !in 1..entity.playerCount }
+            ) {
+                return@withTransaction failed(matchId, RepositoryError.WRITE_FAILED)
+            }
+            val committedAt = now
+            val existingBySeat = roleDao.listByMatch(matchId.raw).associateBy { it.seatNumber }
+            val roles = assignments.map { assignment ->
+                Mapping.toRoleEntity(
+                    assignmentId = existingBySeat[assignment.seat]?.id ?: idGenerator.newId(),
+                    matchId = matchId,
+                    assignment = assignment.copy(revealState = RevealState.REVEALED)
+                )
+            }
+            if (roles.isNotEmpty()) roleDao.upsertAll(roles)
             roleDao.revealAll(matchId.raw)
-            matchDao.updateStatus(entity.id, entity.status, committedAt, committedAt)
+            matchDao.updateStatus(
+                entity.id,
+                entity.status,
+                entity.revealedAt ?: committedAt,
+                committedAt
+            )
+            // 新角色可能让既有刺杀事件变得可判定；重放也属于此次事务。
+            recomputeProjectionLocked(matchId)
+            AppendResult(matchId, eventId = null, occurredOrder = null)
         }
-        return AppendResult(matchId = matchId, eventId = null, occurredOrder = null)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        android.util.Log.w(DB_LOG_TAG, "揭晓失败，事务已撤销：matchId=${matchId.raw}", failure)
+        failed(matchId, RepositoryError.WRITE_FAILED)
     }
 
     override suspend fun setStatus(matchId: MatchId, status: MatchStatus, revealedAt: Long?) {

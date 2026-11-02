@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 /**
  * 结局揭晓 ViewModel（TASKS.md T56）。
@@ -107,7 +108,7 @@ class RevealViewModel(
         )
     }
 
-    /** 保存角色 → 揭晓。两步都在仓储事务里完成。 */
+    /** 角色、揭晓时间和状态由仓储一次原子提交；失败保留当前输入。 */
     private fun reveal() {
         val current = _state.value
         if (!current.canReveal) return
@@ -119,16 +120,20 @@ class RevealViewModel(
                 revealState = RevealState.REVEALED
             )
         }
+        // 在 launch 之前设置闸门，重复点击无法排入第二次揭晓。
+        _state.value = _state.value.copy(saveStatus = SaveStatus.SAVING)
         viewModelScope.launch {
-            _state.value = _state.value.copy(saveStatus = SaveStatus.SAVING)
-            val result = runCatching {
-                repository.saveRoleAssignments(matchId, assignments)
-                repository.revealAllRoles(matchId)
+            val result = try {
+                Result.success(repository.revealMatch(matchId, assignments))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Result.failure(failure)
             }
-            if (result.isFailure) {
+            if (result.isFailure || result.getOrNull()?.isSuccess != true) {
                 _state.value = _state.value.copy(
                     saveStatus = SaveStatus.FAILED,
-                    errorMessage = result.exceptionOrNull()?.message ?: "揭晓失败"
+                    errorMessage = "揭晓失败，输入已保留，可重试"
                 )
                 return@launch
             }

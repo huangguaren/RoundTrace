@@ -3,6 +3,7 @@ package com.roundtrace.app.data
 import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.roundtrace.app.core.data.RepositoryError
 import com.roundtrace.app.core.data.RoomMatchRepository
 import com.roundtrace.app.core.database.EventCodec
 import com.roundtrace.app.core.database.RoundTraceDatabase
@@ -152,13 +153,44 @@ class RoomMatchRepositoryTest {
     }
 
     @Test
+    fun reviseEventRejectsSelfSupersede() = runTest {
+        // 配套用例：替代事件沿用目标 id 时**必须**被拒绝，
+        // 否则审计链无法区分新旧版本（EventRevisionPolicy.SELF_SUPERSEDE）。
+        val matchId = createMatch()
+        val first = repository.appendEvent(matchId, questStarted(1))
+        val targetId = first.eventId!!
+
+        val revised = repository.reviseEvent(
+            matchId,
+            targetId,
+            questStarted(1).copy(leaderSeat = 3) // eventId 仍是 "q-1"
+        )
+
+        assertEquals(
+            "同 id 取代自己应被拒绝",
+            RepositoryError.INVALID_SUPERSEDE_TARGET,
+            revised.error
+        )
+        val all = database.matchEventDao().listAll(matchId.raw)
+        assertEquals("拒绝后不得写入任何新行", 1, all.size)
+        assertEquals("原事件不得被撤销", 0, all.count { it.retracted })
+    }
+
+    @Test
     fun reviseEventRetractsOldVersion() = runTest {
         val matchId = createMatch()
         val first = repository.appendEvent(matchId, questStarted(1))
         val targetId = first.eventId
         assertNotNull(targetId)
 
-        val replacement = questStarted(1).copy(leaderSeat = 3)
+        // 替代事件必须**换一个 eventId**：修订链是「新事件 supersedesId 指向旧事件」，
+        // 若沿用同一个 id 会被 EventRevisionPolicy 的 SELF_SUPERSEDE 正确拒绝
+        // （同一 id 取代自己，审计链就说不清哪条是新版）。
+        // 这条用例此前从未在设备上执行过，所以这个缺陷一直烂在仓库里。
+        val replacement = questStarted(1).copy(
+            eventId = EventId("q-1-v2"),
+            leaderSeat = 3
+        )
         val revised = repository.reviseEvent(matchId, targetId!!, replacement)
 
         assertEquals("修订应成功", null, revised.error)

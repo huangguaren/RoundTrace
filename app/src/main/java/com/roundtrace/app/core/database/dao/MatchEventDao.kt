@@ -139,6 +139,13 @@ abstract class MatchEventDao {
     )
     abstract suspend fun markRetracted(matchId: String, id: String): Int
 
+    /** 回滚按逻辑位置截断，与写入序号无关；只改变本局的有效版本。 */
+    @Query(
+        "UPDATE match_events SET retracted = 1 " +
+            "WHERE matchId = :matchId AND logicalPosition > :logicalPosition AND retracted = 0"
+    )
+    abstract suspend fun retractAfterOrder(matchId: String, logicalPosition: Int): Int
+
     @Query(
         "SELECT COUNT(*) FROM match_events WHERE matchId = :matchId " +
             "AND eventType = :type AND retracted = 0"

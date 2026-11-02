@@ -53,10 +53,22 @@ interface MatchRepository {
     /** 撤销：把事件标记为 `retracted = 1`。 */
     suspend fun retractEvent(matchId: MatchId, eventId: EventId): AppendResult
 
+    /**
+     * 单事务撤销本局中逻辑位置大于 [logicalPosition] 的全部有效事件并重算状态。
+     * 保留历史行与已有揭晓时间；边界包含在保留范围内，0 表示撤销全部事件。
+     */
+    suspend fun retractAfterOrder(matchId: MatchId, logicalPosition: Int): AppendResult
+
     suspend fun saveRoleAssignments(matchId: MatchId, assignments: List<RoleAssignment>)
 
     /** 揭晓全部角色：`revealState = REVEALED` + 写 `revealedAt`。 */
     suspend fun revealAllRoles(matchId: MatchId): AppendResult
+
+    /**
+     * 在同一事务内保存角色、揭晓全部身份、写首次揭晓时间并重算状态。
+     * 重复调用保留首次揭晓时间；未知身份仍可保存，任何步骤失败则整体回滚。
+     */
+    suspend fun revealMatch(matchId: MatchId, assignments: List<RoleAssignment>): AppendResult
 
     suspend fun setStatus(matchId: MatchId, status: MatchStatus, revealedAt: Long?)
 

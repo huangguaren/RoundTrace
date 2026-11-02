@@ -451,25 +451,43 @@ class RecordViewModel(
         }
     }
 
-    /** 回滚到指定任务：删除该任务结算之后的所有事件。 */
+    /** 回滚到指定任务：事务化撤销该任务最后逻辑位置之后的所有事件。 */
     private fun rollbackToQuest(questNo: Int) {
+        if (isCommitting) return
+        isCommitting = true
+        commitInFlightFlow.value = true
         viewModelScope.launch {
-            val bundle = repository.getBundle(matchId) ?: return@launch
-            // 找任务N的最后一个事件 order（该任务的 MISSION_RESOLVED 或最后一个相关事件）
-            val questEvents = bundle.events.filter { event ->
-                when (event) {
-                    is com.roundtrace.app.core.model.QuestStarted -> event.questNo == questNo
-                    is com.roundtrace.app.core.model.TeamProposed -> event.questNo == questNo
-                    is com.roundtrace.app.core.model.TeamVoteRecorded -> event.questNo == questNo
-                    is com.roundtrace.app.core.model.TeamProposalResolved -> event.questNo == questNo
-                    is com.roundtrace.app.core.model.MissionResolved -> event.questNo == questNo
-                    else -> false
+            try {
+                saveStatusFlow.value = SaveStatus.SAVING
+                val bundle = runCatchingCancellable { repository.getBundle(matchId) }.getOrNull()
+                if (bundle == null) {
+                    saveStatusFlow.value = SaveStatus.FAILED
+                    undoFeedbackFlow.value = UndoFeedback.FAILED
+                    return@launch
                 }
-            }
-            val cutoffOrder = questEvents.maxOfOrNull { it.occurredOrder } ?: 0
-            // 删除所有 order > cutoffOrder 的事件
-            bundle.events.filter { it.occurredOrder > cutoffOrder }.forEach { e ->
-                runCatching { repository.retractEvent(matchId, e.eventId) }
+                val cutoffOrder = bundle.events.filter { event ->
+                    when (event) {
+                        is com.roundtrace.app.core.model.QuestStarted -> event.questNo == questNo
+                        is com.roundtrace.app.core.model.TeamProposed -> event.questNo == questNo
+                        is com.roundtrace.app.core.model.TeamVoteRecorded -> event.questNo == questNo
+                        is com.roundtrace.app.core.model.TeamProposalResolved -> event.questNo == questNo
+                        is com.roundtrace.app.core.model.MissionResolved -> event.questNo == questNo
+                        else -> false
+                    }
+                }.maxOfOrNull { it.occurredOrder }
+                // 找不到目标不能回退为 0，否则会把整局撤空。
+                if (cutoffOrder == null) {
+                    saveStatusFlow.value = SaveStatus.FAILED
+                    undoFeedbackFlow.value = UndoFeedback.FAILED
+                    return@launch
+                }
+                val result = runCatchingCancellable { repository.retractAfterOrder(matchId, cutoffOrder) }
+                val success = result.isSuccess && result.getOrNull()?.isSuccess == true
+                saveStatusFlow.value = if (success) SaveStatus.SAVED else SaveStatus.FAILED
+                undoFeedbackFlow.value = if (success) UndoFeedback.DONE else UndoFeedback.FAILED
+            } finally {
+                isCommitting = false
+                commitInFlightFlow.value = false
             }
         }
     }

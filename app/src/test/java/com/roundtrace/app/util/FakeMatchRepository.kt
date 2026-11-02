@@ -33,7 +33,7 @@ import kotlinx.coroutines.flow.map
 class FakeMatchRepository(
     private val config: GameConfig,
     initialEvents: List<MatchEvent> = emptyList(),
-    private val revealedAt: Long? = null,
+    private var revealedAt: Long? = null,
     initialRoles: Map<Int, RoleAssignment> = emptyMap()
 ) : MatchRepository {
 
@@ -171,6 +171,17 @@ class FakeMatchRepository(
         return AppendResult(matchId, eventId, target.occurredOrder)
     }
 
+    override suspend fun retractAfterOrder(matchId: MatchId, logicalPosition: Int): AppendResult {
+        if (failNextWrite) {
+            failNextWrite = false
+            return AppendResult(matchId, null, null, error = com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED)
+        }
+        eventsState.value = eventsState.value.map {
+            if (it.occurredOrder > logicalPosition) retract(it) else it
+        }
+        return AppendResult(matchId, null, null)
+    }
+
     override suspend fun saveRoleAssignments(
         matchId: MatchId,
         assignments: List<RoleAssignment>
@@ -178,8 +189,18 @@ class FakeMatchRepository(
         assignments.forEach { roleAssignments[it.seat] = it }
     }
 
-    override suspend fun revealAllRoles(matchId: MatchId): AppendResult =
-        AppendResult(matchId, null, null)
+    override suspend fun revealAllRoles(matchId: MatchId): AppendResult = revealMatch(matchId, emptyList())
+
+    override suspend fun revealMatch(matchId: MatchId, assignments: List<RoleAssignment>): AppendResult {
+        if (failNextWrite) {
+            failNextWrite = false
+            return AppendResult(matchId, null, null, error = com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED)
+        }
+        assignments.forEach { roleAssignments[it.seat] = it }
+        roleAssignments.replaceAll { _, role -> role.copy(revealState = com.roundtrace.app.core.model.RevealState.REVEALED) }
+        if (revealedAt == null) revealedAt = 1_700_000_000_000L
+        return AppendResult(matchId, null, null)
+    }
 
     override suspend fun setStatus(matchId: MatchId, status: MatchStatus, revealedAt: Long?) {
         this.status = status

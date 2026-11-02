@@ -25,7 +25,8 @@ import org.junit.runner.RunWith
  * 按 migration-plan §15.5 的应急方案：T1 下沉到仪器测试（真机/模拟器可跑），
  * JVM 侧的回填正确性由 [MigrationBackfillManualTest]（T2）承担，
  * 后者不碰 `InstrumentationRegistry`，走「手工 v3 夹具 + Room 打开触发迁移」。
- * 本机无设备，故 T1 状态为 **NOT RUN**（不是「通过」）。
+ * 2026-11-02 已在 API 34 Android 模拟器运行 7 个用例并通过；报告见 `docs/TEST_REPORT.md` §13。
+ * 这不替代 API 26 等实体设备上的迁移验证。
  *
  * 它验证的是 **Room 能跑完迁移且 schema 校验通过**——
  * 这是 `@ColumnInfo(defaultValue)` 写错（例如带引号、带空格、
