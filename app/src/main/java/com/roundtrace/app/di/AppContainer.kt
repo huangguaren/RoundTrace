@@ -3,6 +3,7 @@ package com.roundtrace.app.di
 import android.content.Context
 import com.roundtrace.app.core.data.DataStoreSettingsRepository
 import com.roundtrace.app.core.data.MatchRepository
+import com.roundtrace.app.core.data.ProjectionRefreshCoordinator
 import com.roundtrace.app.core.data.RoomMatchRepository
 import com.roundtrace.app.core.data.SettingsRepository
 import com.roundtrace.app.core.database.EventCodec
@@ -103,12 +104,15 @@ class AppContainer(appContext: Context) {
     init {
         appScope.launch {
             runCatching {
+                val required = SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION
                 val version = settingsRepository.projectionOrderModelVersion.first()
-                if (version >= SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION) {
+                val alreadyMarked = !ProjectionRefreshCoordinator.shouldRefresh(version, required)
+                if (alreadyMarked) {
                     return@runCatching
                 }
                 val result = matchRepository.recomputeAllProjections()
-                if (!result.isComplete) {
+                // 判断本身抽成纯函数（F5）：这样「失败却写标记」能被单测直接钉住
+                if (!ProjectionRefreshCoordinator.shouldWriteProjectionMarker(result, alreadyMarked)) {
                     // **不写标记** → 下次启动重试。宁可重复扫描，不可静默停在旧结论。
                     Log.w(
                         PROJECTION_TAG,
@@ -117,13 +121,10 @@ class AppContainer(appContext: Context) {
                     )
                     return@runCatching
                 }
-                settingsRepository.setProjectionOrderModelVersion(
-                    SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION
-                )
+                settingsRepository.setProjectionOrderModelVersion(required)
                 Log.i(
                     PROJECTION_TAG,
-                    "投影顺序模型升级完成：重算 ${result.processed} 局（旧版本 $version → " +
-                        "${SettingsRepository.CURRENT_PROJECTION_ORDER_MODEL_VERSION}）"
+                    "投影顺序模型升级完成：重算 ${result.processed} 局（旧版本 $version → $required）"
                 )
             }.onFailure { throwable ->
                 Log.w(PROJECTION_TAG, "一次性投影刷新失败（不阻断启动，下次重试）", throwable)
