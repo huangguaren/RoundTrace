@@ -101,9 +101,55 @@ class MigrationBackfillManualTest {
         assertEquals("孤儿链回落到 occurredOrder / 0", 4 to 0, LegacyV3Database.slotOf(db, "orphan"))
     }
 
+    /**
+     * F2：**跨对局**的 `supersedesId` 不得继承另一局的链根位置。
+     *
+     * 这不是理论问题：`ee20e3d` 修 RT-002 之前，`reviseEvent` 只按 `eventId` 查、并假定
+     * 同局，跨局修订能真的写进库。所以真实 v3 库里可能有「B 局事件的 supersedesId 指向 A 局事件」。
+     *
+     * 递归 CTE 原来只按 `supersedesId` 连线、不按 `matchId` 分段，于是 B 局这条事件
+     * 会继承 A 局链根的位置（1），与 B 局自己的位置 1 撞车 → 同一位置两条 active，INV-1 被破坏。
+     * 加 `AND child.matchId = chain.matchId` 后，本局查不到祖先，自然回落到 `occurredOrder`。
+     */
     @Test
-    fun migratingEmptyLegacyFileWorks() {
-        val name = "t2-empty.db"
+    fun migratingCrossMatchSupersedesDoesNotInheritOtherMatchPosition() {
+        val name = "f2-cross-match.db"
+        LegacyV3Database.create(context, name) { db ->
+            LegacyV3Database.insertV3Match(db, "mA", title = "A 局")
+            LegacyV3Database.insertV3Match(db, "mB", title = "B 局")
+            // A 局：e1 是链根，位置 1
+            LegacyV3Database.insertV3Event(db, "e1", "mA", 1)
+            // B 局：f1 位置 1；f2 位置 2，但 supersedesId 指向**另一局**的 e1
+            LegacyV3Database.insertV3Event(db, "f1", "mB", 1)
+            LegacyV3Database.insertV3Event(db, "f2", "mB", 2, supersedesId = "e1")
+        }
+
+        val room = LegacyV3Database.openWithRoom(context, name)
+        opened = room
+        val db = room.openHelper.writableDatabase
+
+        assertEquals(
+            "跨局链必须回退到自身 occurredOrder（不能继承 A 局的位置 1）",
+            2 to 0,
+            LegacyV3Database.slotOf(db, "f2")
+        )
+        assertEquals(
+            "B 局不得出现同位置的两条 active 行（INV-1）",
+            0,
+            LegacyV3Database.count(
+                db,
+                "SELECT COUNT(*) FROM (" +
+                    "SELECT logicalPosition FROM match_events " +
+                    "WHERE matchId = 'mB' AND retracted = 0 " +
+                    "GROUP BY logicalPosition HAVING COUNT(*) > 1)"
+            )
+        )
+        assertEquals("另一局的事件不受影响", 1 to 0, LegacyV3Database.slotOf(db, "e1"))
+        assertEquals("B 局自身的事件位置不变", 1 to 0, LegacyV3Database.slotOf(db, "f1"))
+    }
+
+    @Test
+    fun migratingEmptyLegacyFileWorks() {        val name = "t2-empty.db"
         LegacyV3Database.create(context, name) { db ->
             LegacyV3Database.insertV3Match(db, "m1")
         }

@@ -95,6 +95,79 @@ internal fun warnOnDuplicateActivePositions(db: SupportSQLiteDatabase) {
 }
 
 /**
+ * 跨局 `supersedesId` 命中记录（F2 追加诊断）。
+ *
+ * 一行 = 一条「B 局的事件却说自己在修订 A 局的事件」的脏链。
+ */
+internal data class CrossMatchSupersede(
+    val matchId: String,
+    val eventId: String,
+    val supersedesId: String
+)
+
+/**
+ * 跨局修订链自检（F2 追加）：找出 `supersedesId` 指向**另一局**事件的记录。
+ *
+ * ## 为什么需要它（修 CTE 不够）
+ *
+ * `MIGRATION_3_4` 加上 `AND child.matchId = chain.matchId` 只保证「升级时不再算错位置」，
+ * **它不修复数据**：脏链本身还在库里。而 RT-002 修复前，`reviseEvent` 只按 `eventId` 查、
+ * `sameMatch = true` 是**硬编码断言而非校验**，所以旧库里真的可能已经留下跨局链。
+ * 这条自检负责把存量情况暴露出来，供人工判断（是否用备份恢复）。
+ *
+ * ## 三条约束
+ *
+ * 1. **只读**：不 DELETE、不改 `supersedesId`——自动改历史数据比不修更危险；
+ * 2. **可测**：查询与日志分开（[findCrossMatchSupersedes] 返回数据，[warnOnCrossMatchSupersedes]
+ *    只打日志），否则只能靠读日志断言；
+ * 3. **不阻断**：与 INV-1 自检同一条原则——库脏也要能启动，否则用户彻底打不开 App。
+ *
+ * `LIMIT 20`：异常库可能有大量命中，日志只需要样本。
+ */
+internal fun findCrossMatchSupersedes(db: SupportSQLiteDatabase): List<CrossMatchSupersede> {
+    val result = mutableListOf<CrossMatchSupersede>()
+    db.query(
+        "SELECT child.matchId, child.id, child.supersedesId " +
+            "  FROM match_events AS child " +
+            "  JOIN match_events AS parent ON parent.id = child.supersedesId " +
+            " WHERE child.matchId <> parent.matchId " +
+            " LIMIT 20"
+    ).use { cursor ->
+        while (cursor.moveToNext()) {
+            result += CrossMatchSupersede(
+                matchId = cursor.getString(0),
+                eventId = cursor.getString(1),
+                supersedesId = cursor.getString(2)
+            )
+        }
+    }
+    return result
+}
+
+/** 启动期执行跨局链自检：命中就 `Log.w`，**不修复、不抛异常、不阻断启动**。 */
+internal fun warnOnCrossMatchSupersedes(db: SupportSQLiteDatabase) {
+    runCatching {
+        val rows = findCrossMatchSupersedes(db)
+        if (rows.isNotEmpty()) {
+            Log.w(
+                DB_TAG,
+                "跨局修订链：${rows.size} 条 supersedesId 指向其它对局的事件（只记录，不修复；" +
+                    "可能来自 RT-002 修复前的跨局修订，可用数据库备份恢复）"
+            )
+            rows.forEach { row ->
+                Log.w(
+                    DB_TAG,
+                    "  matchId=${row.matchId} eventId=${row.eventId} " +
+                        "supersedesId=${row.supersedesId}"
+                )
+            }
+        }
+    }.onFailure { throwable ->
+        Log.w(DB_TAG, "跨局链自检本身失败（已忽略，不阻断启动）", throwable)
+    }
+}
+
+/**
  * 迁移前自动备份（migration-plan §14-① 第 5 条）。
  *
  * ## 为什么必须在 `Room.databaseBuilder(...)` **之前**调用
@@ -244,13 +317,21 @@ abstract class RoundTraceDatabase : RoomDatabase() {
                 )
 
                 // ② 回填 logicalPosition：沿 supersedesId 链取链根的 occurredOrder
+                //
+                // `AND child.matchId = chain.matchId` **不能省**（F2）：
+                // 递归只按 supersedesId 连线，一旦 v3 库里存在**跨对局**的 supersedesId
+                // （RT-002 修复前 `reviseEvent` 只按 eventId 查，跨局修订能写进库），
+                // 本局事件就会继承另一局的链根位置，与同局另一条 active 事件撞在同一
+                // logicalPosition 上 —— INV-1 被破坏。加上 matchId 约束后，跨局链在
+                // 本局查不到祖先，自然落到 COALESCE 的 occurredOrder 兜底。
                 db.execSQL(
-                    "WITH RECURSIVE chain(id, rootOrder) AS (\n" +
-                        "    SELECT id, occurredOrder FROM `match_events` WHERE supersedesId IS NULL\n" +
+                    "WITH RECURSIVE chain(id, matchId, rootOrder) AS (\n" +
+                        "    SELECT id, matchId, occurredOrder FROM `match_events` WHERE supersedesId IS NULL\n" +
                         "    UNION ALL\n" +
-                        "    SELECT child.id, chain.rootOrder\n" +
+                        "    SELECT child.id, child.matchId, chain.rootOrder\n" +
                         "      FROM `match_events` AS child\n" +
                         "      JOIN chain ON child.supersedesId = chain.id\n" +
+                        "                AND child.matchId = chain.matchId\n" +
                         ")\n" +
                         "UPDATE `match_events`\n" +
                         "   SET logicalPosition = COALESCE(\n" +
@@ -258,14 +339,15 @@ abstract class RoundTraceDatabase : RoomDatabase() {
                         "         occurredOrder)"
                 )
 
-                // ③ 回填 revisionSeq：链深度 - 1（根 = 0）
+                // ③ 回填 revisionSeq：链深度 - 1（根 = 0）；同样按 matchId 分段
                 db.execSQL(
-                    "WITH RECURSIVE chain(id, depth) AS (\n" +
-                        "    SELECT id, 0 FROM `match_events` WHERE supersedesId IS NULL\n" +
+                    "WITH RECURSIVE chain(id, matchId, depth) AS (\n" +
+                        "    SELECT id, matchId, 0 FROM `match_events` WHERE supersedesId IS NULL\n" +
                         "    UNION ALL\n" +
-                        "    SELECT child.id, chain.depth + 1\n" +
+                        "    SELECT child.id, child.matchId, chain.depth + 1\n" +
                         "      FROM `match_events` AS child\n" +
                         "      JOIN chain ON child.supersedesId = chain.id\n" +
+                        "                AND child.matchId = chain.matchId\n" +
                         ")\n" +
                         "UPDATE `match_events`\n" +
                         "   SET revisionSeq = COALESCE(\n" +
@@ -309,6 +391,8 @@ abstract class RoundTraceDatabase : RoomDatabase() {
                         override fun onOpen(db: SupportSQLiteDatabase) {
                             super.onOpen(db)
                             warnOnDuplicateActivePositions(db)
+                            // F2 追加：修 CTE 只保证「升级不再算错」，存量脏链靠这条自检暴露
+                            warnOnCrossMatchSupersedes(db)
                         }
                     }
                 )

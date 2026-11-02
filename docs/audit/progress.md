@@ -491,3 +491,29 @@ git status --short app/schemas   → （无输出，纯代码改动）
    「逐局 runCatching，全部跑完就写标记」，**单局失败会被吞掉**。若某局数据损坏导致重放抛异常，
    标记仍会被写成 1，该局永久停在旧结论。**这是本轮引入的真实缺陷**，
    建议下一轮改为「有任一失败就不写标记」。
+
+## 阶段 D 修复（F1–F5，2026-11-02）
+
+QA 阶段 D 验收（V01–V11 PASS、V12 PARTIAL，325 例）后主理人派了 5 条修复。
+
+### F2｜迁移 CTE 按 matchId 分段（P1）
+
+递归 CTE 原来只按 `supersedesId` 连线、不按对局分组。`mB.f2(supersedesId=mA.e1)` 会继承
+mA 的链根位置 1，与 `mB.f1` 同位 → B 局两条 active 同位置，INV-1 被破坏。
+两条 CTE 的 JOIN 都加了 `AND child.matchId = chain.matchId`，跨局链自然回落到
+`COALESCE(..., occurredOrder)` / `COALESCE(..., 0)`。
+
+**为什么可以就地改 `MIGRATION_3_4` 而不升 v5**：v4 **从未对外发布**（远端仍是 v0.3.0），
+没有任何用户库停在 v4，因此不存在「已按错误逻辑回填过、需要再修一次」的历史数据。
+v4 属于**预发布版本，允许就地修正**；`4.json` 不变（这是纯数据回填逻辑，不改 schema），
+`git status --short app/schemas` 仍为空。
+
+用例：`MigrationBackfillManualTest.migratingCrossMatchSupersedesDoesNotInheritOtherMatchPosition`
+（两局夹具）。已做反向验证：去掉 matchId 约束时该用例失败（`f2` 继承到位置 1），加回后通过。
+
+**追加：跨局链诊断（只告警、不改数据）**。修 CTE 只保证「升级时不再算错位置」，脏链本身还在库里，
+所以启动自检里加了一条 `findCrossMatchSupersedes` / `warnOnCrossMatchSupersedes`
+（与 B3 的 `warnOnDuplicateActivePositions` 同一套写法）：命中就 `Log.w` 打印
+`matchId + eventId + supersedesId`，**绝不自动修数据**——自动改历史比不修更危险。
+查询与日志拆成两个函数，数据面可以直接断言。
+
