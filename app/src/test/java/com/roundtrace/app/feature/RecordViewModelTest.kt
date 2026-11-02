@@ -13,12 +13,15 @@ import com.roundtrace.app.core.rules.avalon.AvalonReducer
 import com.roundtrace.app.core.rules.avalon.AvalonRules
 import com.roundtrace.app.core.util.SequentialIdGenerator
 import com.roundtrace.app.core.util.fixedClock
+import com.roundtrace.app.feature.record.ProposalDraft
+import com.roundtrace.app.feature.record.ProposalDraftCodec
 import com.roundtrace.app.feature.record.RecordAction
 import com.roundtrace.app.feature.record.RecordViewModel
 import com.roundtrace.app.core.ui.component.SaveStatus
 import com.roundtrace.app.util.FakeMatchRepository
 import com.roundtrace.app.util.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -248,5 +251,186 @@ class RecordViewModelTest {
         assertFalse(state.isLoading)
         assertEquals("空对局应派生第 1 个任务", 1, state.quest?.questNo)
         assertEquals("空对局时间线应为空", 0, state.timeline.size)
+    }
+
+    // ————————————————————————————————————————————————————————
+    // RT-006：页面重建后恢复草稿
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 重建 ViewModel 后，上次未提交的草稿必须回来。
+     *
+     * 这是 RT-006 的主用例：进程被杀 / 切后台被回收 / 旋屏后，
+     * 用户刚选好的队伍与票数不能丢。
+     */
+    @Test
+    fun draftIsRestoredOnViewModelRebuild() = runTest {
+        val repository = FakeMatchRepository(config = eightPlayerConfig())
+        val draft = ProposalDraft(
+            leaderSeat = 3,
+            teamSeats = setOf(1, 2, 4),
+            approveCount = 5,
+            rejectCount = 2
+        )
+        repository.seedDraft(RecordViewModel.DRAFT_KEY, ProposalDraftCodec.encode(draft))
+
+        // 「重建」＝ 新建一个 VM，旧实例丢弃
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        val restored = viewModel.uiState.value.draft
+        assertEquals("队长应恢复", 3, restored.leaderSeat ?: -1)
+        assertEquals("队员应恢复", setOf(1, 2, 4), restored.teamSeats)
+        assertEquals("赞成票应恢复", 5, restored.approveCount ?: -1)
+        assertEquals("反对票应恢复", 2, restored.rejectCount ?: -1)
+    }
+
+    /**
+     * 关键竞态：`loadDraft` 是挂起调用，返回时用户可能已经在选人。
+     *
+     * 若此时无条件覆盖，用户刚点的座位会被「上次的草稿」擦掉 ——
+     * 这比「草稿没恢复」严重得多。所以恢复必须只在「用户还没输入」时才生效。
+     */
+    @Test
+    fun restoreDoesNotOverwriteUserInput() = runTest {
+        val repository = FakeMatchRepository(config = eightPlayerConfig())
+        repository.seedDraft(
+            RecordViewModel.DRAFT_KEY,
+            ProposalDraftCodec.encode(
+                ProposalDraft(leaderSeat = 3, teamSeats = setOf(1, 2, 4))
+            )
+        )
+
+        // 闸门：让 loadDraft 挂着不返回，制造竞态窗口
+        val gate = CompletableDeferred<Unit>()
+        repository.loadDraftGate = gate
+
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle() // 此时仍卡在 gate 上
+
+        // 用户在这个窗口里先动手
+        viewModel.onAction(RecordAction.ToggleTeamSeat(7))
+
+        // 现在才放行草稿读取
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        val draft = viewModel.uiState.value.draft
+        assertTrue("用户的输入必须保留，实际=${draft.teamSeats}", draft.teamSeats.contains(7))
+        assertFalse("不得把恢复的旧队伍合并进来", draft.teamSeats.containsAll(setOf(1, 2, 4)))
+        assertEquals("也不得把旧队长写进来", null, draft.leaderSeat)
+    }
+
+    /**
+     * 损坏的草稿必须静默降级为空草稿。
+     *
+     * 草稿是便利功能，不能因为它让记录页打不开 —— 这是「不崩」优先级最高的一条。
+     */
+    @Test
+    fun corruptedDraftFallsBackToEmpty() = runTest {
+        val repository = FakeMatchRepository(config = eightPlayerConfig())
+        repository.seedDraft(RecordViewModel.DRAFT_KEY, "{ broken json")
+
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals("损坏草稿必须降级为空草稿", ProposalDraft(), state.draft)
+        assertFalse("页面不得因此进入错误态", state.errorMessage != null)
+    }
+
+    /**
+     * 恢复**不得**触发保存。
+     *
+     * 若恢复走了 `scheduleDraftSave()`，刚读出来的内容会被原样写回、
+     * 刷新 `updatedAt`，还会让「恢复是只读动作」这个前提无法成立。
+     */
+    @Test
+    fun restoreDoesNotScheduleSave() = runTest {
+        val repository = FakeMatchRepository(config = eightPlayerConfig())
+        repository.seedDraft(
+            RecordViewModel.DRAFT_KEY,
+            ProposalDraftCodec.encode(ProposalDraft(leaderSeat = 2, teamSeats = setOf(5)))
+        )
+
+        val viewModel = newViewModel(repository)
+        // advanceUntilIdle 会推进虚拟时间越过 300ms 防抖窗口：
+        // 只要恢复路径里挂了 scheduleDraftSave，这里就会看到一次 saveDraft
+        advanceUntilIdle()
+
+        assertEquals(
+            "恢复草稿不得产生任何写库动作，实际 savedDrafts=${repository.savedDrafts}",
+            0,
+            repository.savedDrafts.size
+        )
+        assertTrue("但草稿内容必须已经恢复", viewModel.uiState.value.draft.teamSeats.contains(5))
+    }
+
+    /**
+     * A-1 的关键回归：用户「选中又全部取消」同样是一次有效操作。
+     *
+     * 旧实现用「草稿是否为空」当判据，此时草稿恰好为空 → 旧草稿会覆盖进来，
+     * 把「我刚清空」这件事抹掉。必须用显式的用户操作标记才算对。
+     */
+    @Test
+    fun restoreDoesNotOverwriteClearedInput() = runTest {
+        val repository = FakeMatchRepository(config = eightPlayerConfig())
+        repository.seedDraft(
+            RecordViewModel.DRAFT_KEY,
+            ProposalDraftCodec.encode(
+                ProposalDraft(leaderSeat = 3, teamSeats = setOf(1, 2, 4))
+            )
+        )
+
+        val gate = CompletableDeferred<Unit>()
+        repository.loadDraftGate = gate
+
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle() // 卡在 gate
+
+        // 用户选了一个座位，然后又取消 —— 草稿回到空，但这是一次有效操作
+        viewModel.onAction(RecordAction.ToggleTeamSeat(6))
+        viewModel.onAction(RecordAction.ToggleTeamSeat(6))
+        assertEquals(
+            "前置条件：用户操作后草稿应为空",
+            emptySet<Int>(),
+            viewModel.uiState.value.draft.teamSeats
+        )
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            "用户清空后的空草稿不得被旧草稿填回",
+            emptySet<Int>(),
+            viewModel.uiState.value.draft.teamSeats
+        )
+        assertEquals("旧队长也不得被写回来", null, viewModel.uiState.value.draft.leaderSeat)
+    }
+
+    /**
+     * A-2：草稿里出现**未来字段**时必须能正常解码。
+     *
+     * 阶段 C 会给草稿加 `editTargetEventId` 之类的字段；如果解码器遇到未知键就抛，
+     * 「降级版本运行」会直接崩在记录页。这条为后续扩展留兼容性护栏。
+     */
+    @Test
+    fun draftWithUnknownFieldsStillDecodes() = runTest {
+        val repository = FakeMatchRepository(config = eightPlayerConfig())
+        // 手工拼一个「比当前结构更新」的草稿
+        repository.seedDraft(
+            RecordViewModel.DRAFT_KEY,
+            """{"leaderSeat":2,"teamSeats":[1,3],"approveCount":6,""" +
+                """"rejectCount":2,"editTargetEventId":"e-9","futureFlag":true}"""
+        )
+
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        val draft = viewModel.uiState.value.draft
+        assertEquals("已知字段必须正常解码：队长", 2, draft.leaderSeat ?: -1)
+        assertEquals("已知字段必须正常解码：队员", setOf(1, 3), draft.teamSeats)
+        assertEquals("已知字段必须正常解码：赞成", 6, draft.approveCount ?: -1)
+        assertFalse("不得因未知字段进入错误态", viewModel.uiState.value.errorMessage != null)
     }
 }

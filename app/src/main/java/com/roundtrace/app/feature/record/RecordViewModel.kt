@@ -46,7 +46,8 @@ import kotlinx.serialization.json.jsonObject
  * 1. 状态**全部**由 `observeBundle → ReplayEngine.replay` 派生，`onAction` 是唯一入口（T44③④）；
  * 2. 本类**不重复计算**票数、门槛、成败——判定一律问 `AvalonRules`（投票/判定单一入口）；
  * 3. 草稿先落 `match_drafts`（300ms 防抖），用户确认后才写 `match_events`（T49①）；
- * 4. 写入失败必须让 `SaveStatus` 变成 `FAILED`，不能假装已保存。
+ * 4. 写入失败必须让 `SaveStatus` 变成 `FAILED`，不能假装已保存；
+ * 5. 页面重建时必须把未提交的草稿捡回来（RT-006），但**不得覆盖用户已输入的内容**。
  */
 class RecordViewModel(
     private val matchId: MatchId,
@@ -62,6 +63,17 @@ class RecordViewModel(
     private val undoFeedbackFlow = MutableStateFlow<UndoFeedback?>(null)
 
     private var draftSaveJob: Job? = null
+
+    /**
+     * 用户是否**动过**表单（RT-006 A-1）。
+     *
+     * 不能用「`draftFlow.value == ProposalDraft()`」来判断「用户没输入」：
+     * 用户选错人 → 全部取消 → 此刻草稿恰好是空的，但那是一次**有效操作**，
+     * 旧草稿若此刻覆盖进来，等于把「我刚清空」这件事抹掉。
+     *
+     * 只有 `updateDraft {}`（唯一被 `onAction` 调用的入口）会置 true。
+     */
+    private var draftTouchedByUser = false
 
     val uiState: StateFlow<RecordUiState> =
         combine(
@@ -91,6 +103,49 @@ class RecordViewModel(
                 started = SharingStarted.Eagerly,
                 initialValue = RecordUiState(isLoading = true)
             )
+
+    init {
+        // RT-006：页面重建（进程被杀 / 切后台被回收 / 旋屏）后把草稿捡回来
+        restoreDraft()
+    }
+
+    // ————————————————————————————————————————————————————————
+    // 草稿恢复（RT-006）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 从 `match_drafts` 恢复上次未提交的草稿。
+     *
+     * 四条硬约束（都是「不做就会出事」的）：
+     *
+     * 1. **失败当作没有草稿**：`loadDraft` 抛异常、JSON 损坏、字段缺失，
+     *    一律静默回落到空草稿。草稿是「便利功能」，不能因为它让记录页打不开。
+     * 2. **只在用户尚未动过表单时写入**：`loadDraft` 是挂起调用，返回时用户可能已经在选人。
+     *    若此时无条件覆盖，用户刚点的三个座位会被「上次的草稿」擦掉——
+     *    这是比「草稿没恢复」严重得多的 bug。
+     *    判据是 [draftTouchedByUser] 标记，**不是**「草稿是否为空」：
+     *    用户「选中又全部取消」同样是一次有效操作，不能被旧草稿覆盖。
+     * 3. **恢复不得触发保存**：这里刻意**不**调 `scheduleDraftSave()`。
+     *    否则刚读出来的内容会被原样写回，刷新 `updatedAt`，
+     *    并且让「恢复没有副作用」这件事变得无法断言。
+     * 4. **空草稿不写入**：仓库里存着 `"{}"`（上次清空后留下的）时，
+     *    恢复成空草稿没有任何意义，还会白白让 `draft` 走一次发射。
+     */
+    private fun restoreDraft() {
+        viewModelScope.launch {
+            val json = runCatching { repository.loadDraft(matchId, DRAFT_KEY) }.getOrNull()
+            // decode 自身对 null / 空串 / 损坏 JSON 都返回空草稿，不会抛
+            val restored = runCatching { ProposalDraftCodec.decode(json) }.getOrNull()
+                ?: return@launch
+            if (restored == ProposalDraft()) return@launch
+
+            // 用户已经在异步窗口内动过手 → 以用户输入为准。
+            // 注意判据是「标记」而不是「草稿是否为空」：用户可能已经输入又清空。
+            if (draftTouchedByUser) return@launch
+
+            draftFlow.value = restored
+        }
+    }
 
     // ————————————————————————————————————————————————————————
     // 唯一入口
@@ -154,6 +209,7 @@ class RecordViewModel(
     // ————————————————————————————————————————————————————————
 
     private fun updateDraft(transform: (ProposalDraft) -> ProposalDraft) {
+        draftTouchedByUser = true
         draftFlow.value = transform(draftFlow.value)
         scheduleDraftSave()
     }

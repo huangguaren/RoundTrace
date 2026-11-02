@@ -55,6 +55,24 @@ class FakeMatchRepository(
     /** 保存草稿的调用记录。 */
     val savedDrafts: MutableList<String> = mutableListOf()
 
+    /**
+     * 直接塞一条草稿，**不**记入 [savedDrafts]。
+     *
+     * 用途：模拟「上一次会话留下的草稿」。若用 `saveDraft()` 播种，
+     * `savedDrafts` 会凭空多一条，导致「恢复是否触发了保存」无法断言。
+     */
+    fun seedDraft(screenKey: String, json: String) {
+        drafts[screenKey] = json
+    }
+
+    /**
+     * 可选闸门：非空时 [loadDraft] 会挂起直到它完成。
+     *
+     * 用途：制造「读取草稿还没返回，用户已经开始输入」的竞态窗口，
+     * 用来验证恢复**不会**覆盖用户输入。
+     */
+    var loadDraftGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override fun observeSummaries(filter: MatchStatusFilter): Flow<List<MatchSummary>> =
         eventsState.map { listOf(buildSummary(it)) }
 
@@ -159,8 +177,10 @@ class FakeMatchRepository(
         savedDrafts += json
     }
 
-    override suspend fun loadDraft(matchId: MatchId, screenKey: String): String? =
-        drafts[screenKey]
+    override suspend fun loadDraft(matchId: MatchId, screenKey: String): String? {
+        loadDraftGate?.await()
+        return drafts[screenKey]
+    }
 
     override suspend fun clearDraft(matchId: MatchId, screenKey: String) {
         drafts.remove(screenKey)
