@@ -1,13 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 12+ 云备份与设备迁移规则：只备份数据库与 SharedPreferences。
-     cache 目录本来就不参与备份/迁移，无需 exclude。 -->
+<!--
+  Android 12+ 云备份与设备迁移规则（RT-011）。
+
+  与 backup_rules.xml 保持一致的范围：
+  - database：对局数据库（含事件历史）
+  - sharedpref：SharedPreferences
+  - file/datastore：Preferences DataStore 的实际落盘位置
+    （files/datastore/<name>.preferences_pb）。原规则漏了它，
+    导致**换机后主题与默认人数恢复成默认值**。
+
+  cache 目录不参与备份/迁移，分享导出的临时文件不会被带走。
+-->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
+        <include domain="file" path="datastore/" />
     </cloud-backup>
     <device-transfer>
         <include domain="database" path="." />
         <include domain="sharedpref" path="." />
+        <include domain="file" path="datastore/" />
     </device-transfer>
 </data-extraction-rules>

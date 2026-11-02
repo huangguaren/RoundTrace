@@ -1,7 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 12 以下的备份规则：只备份数据库与 SharedPreferences。
-     cache 目录本来就不参与全量备份，无需 exclude。 -->
+<!--
+  Android 12 以下的备份规则（RT-011）。
+
+  备份范围：
+  - database：对局数据库（含事件历史）
+  - sharedpref：SharedPreferences
+  - file/datastore：DataStore 偏好（主题、默认人数等）。
+    Preferences DataStore 的文件实际落在 **files/datastore/<name>.preferences_pb**，
+    原规则只 include 了 database 与 sharedpref，所以**升级/换机后主题与默认人数会丢**。
+
+  有意不备份：
+  - cache 目录本来就不参与全量备份（分享导出的临时文件在其中，不会被带走）
+  - 头像是外部 content:// URI 引用，恢复后能否读取取决于源文件是否还在，
+    失效时 UI 显示占位并允许重新选取
+-->
 <full-backup-content>
     <include domain="database" path="." />
     <include domain="sharedpref" path="." />
+    <include domain="file" path="datastore/" />
 </full-backup-content>
