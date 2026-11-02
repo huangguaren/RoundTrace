@@ -761,14 +761,17 @@ class RecordViewModel(
             else -> gameState.currentQuestNo
         }.coerceIn(1, AvalonPreset.QUEST_COUNT)
 
-        val expectedTeamSize = rules.expectedTeamSizeFor(playerCount, activeQuestNo)
+        // NX-06：浏览历史任务时用历史任务号，真实进度 activeQuestNo 不变
+        val viewQuestNo = editingQuest ?: activeQuestNo
+
+        val expectedTeamSize = rules.expectedTeamSizeFor(playerCount, viewQuestNo)
         val failThreshold = if (playerCount in AvalonPreset.MIN_PLAYERS..AvalonPreset.MAX_PLAYERS) {
-            rules.failThreshold(playerCount, activeQuestNo)
+            rules.failThreshold(playerCount, viewQuestNo)
         } else {
             1
         }
 
-        val currentQuest = gameState.quests.firstOrNull { it.questNo == activeQuestNo }
+        val currentQuest = gameState.quests.firstOrNull { it.questNo == viewQuestNo }
         val nextProposalNo = if (currentQuest == null) {
             1
         } else {
@@ -776,7 +779,7 @@ class RecordViewModel(
         }
 
         val quest = QuestUiModel(
-            questNo = activeQuestNo,
+            questNo = viewQuestNo,
             expectedTeamSize = expectedTeamSize,
             failThreshold = failThreshold,
             leaderSeat = draft.leaderSeat,
@@ -795,7 +798,7 @@ class RecordViewModel(
         // C-2：编辑态下「队伍人数/门槛」必须按**被编辑的轮次**算。
         // 否则编辑第 1 轮（如 5 人局 2 人队伍）却用当前第 3 轮（3 人队伍）的规则校验，
         // 会凭空报一条「人数不符」，用户也永远点不亮提交按钮。
-        val sheetQuestNo = editSession?.questNo ?: activeQuestNo
+        val sheetQuestNo = editSession?.questNo ?: viewQuestNo
         val sheetExpectedTeamSize = rules.expectedTeamSizeFor(playerCount, sheetQuestNo)
         val sheetFailThreshold = if (playerCount in AvalonPreset.MIN_PLAYERS..AvalonPreset.MAX_PLAYERS) {
             rules.failThreshold(playerCount, sheetQuestNo)
