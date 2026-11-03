@@ -39,6 +39,7 @@
 | 个人组队投票 | `TeamVoteRecorded.votesBySeat[seat]` 非空 | 明确赞成 / 反对 / 未知 | **只有汇总票时不得分摊到个人** |
 | 声称 / 发言 | `PlayerClaimed.speakerSeat`、`targetSeats` | 「X 号说了…」与「X 号被提及…」分开 | 声称 ≠ 身份事实 |
 | 私人判断 | `PrivateNoteAdded.observerSeat`、`targetSeats` | 仅合法观察者本人可见 | 不得进公开事实或他人视角 |
+| 私有声称（`PRIVATE_OBSERVER` 的 `PlayerClaimed`） | `speakerSeat` | 仅**发言者本人**的轨迹里可见 | 不得对被提及者产出「被提及」条目；GOD 视角同样（F13） |
 
 不产出条目的数据：`TeamProposalResolved`（无人身指向）、`AssassinationRecorded`、
 `MatchFinalized`、`MatchAbandoned`（对局级事件，不属于「某个玩家的参与记录」）。
@@ -88,3 +89,6 @@
 | F10 | ViewModel 默认座位、三个筛选、视角联动、位置联动 | `PlayerTraceViewModelTest`（7 条） |
 | F11 | 渲染：选中态、筛选变化、空态、点击回调、长列表滚动、惰性渲染 | `PlayerTraceSectionTest`（9 条） |
 | F12 | 页内接线：点击条目走既有 `ReplayAction.SelectPosition(occurredOrder)`，不新增动作/路由 | `replayScreenRoutesTraceItemClickToSelectPosition` |
+| F13 | 私有声称（`PRIVATE_OBSERVER` 的 `PlayerClaimed`）只在发言者本人轨迹出现，不从「被提及」侧门进他人轨迹 | `privateClaimIsInvisibleToNonOwnerObserver`、`privateClaimNeverAppearsInPublicTrace`、`privateClaimDoesNotProduceMentionedOnOtherSeatsTrace` |
+| F14 | 条目的来源可见性必须带到 UI，私有来源渲染「来自私有记录 · 仅本人可见」 | `privateDerivedItemsCarrySourceVisibility`、`PlayerTraceSectionTest.privateSourceTagIsRenderedOnlyForPrivateItems` |
+| F15 | 队长自提名时同一事件只出 1 条队长记录（detail 标注本人也在队伍中），非队长队员仍有各自 1 条 | `selfNominatedLeaderProducesExactlyOneItem` |
