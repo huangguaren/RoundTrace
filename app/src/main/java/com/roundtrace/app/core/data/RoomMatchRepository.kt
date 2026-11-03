@@ -1,5 +1,6 @@
 package com.roundtrace.app.core.data
 
+import androidx.room.invalidationTrackerFlow
 import androidx.room.withTransaction
 import com.roundtrace.app.BuildConfig
 import com.roundtrace.app.core.data.edit.ActiveEventToken
@@ -33,10 +34,11 @@ import com.roundtrace.app.core.rules.GameReducer
 import com.roundtrace.app.core.rules.GameRulesRegistry
 import com.roundtrace.app.core.util.IdGenerator
 import java.time.Clock
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -97,21 +99,52 @@ class RoomMatchRepository(
         matchDao.observeSummaries(filter.statuses())
             .map { rows -> rows.map(Mapping::toSummary) }
 
+    /**
+     * NX-02 / RT-NX02-SNAP：**一次发射 = 一个事务内读完四张表**。
+     *
+     * ## 为什么不再用四路 `combine`
+     *
+     * 旧实现把 `matches` / `participants` / `role_assignments` / `match_events` 四个 DAO Flow
+     * 直接 `combine`。一次写事务提交后，Room 的 `InvalidationTracker` 会通知**四路各自重查**，
+     * 但四路是**互相独立地异步重查**的：`combine` 在任意一路拿到新值时就会合并发射，
+     * 此时其余三路仍持有旧值 —— 于是「角色已 `REVEALED` 而 `matches.revealedAt` 仍是 `null`」
+     * 「事件已出现而 `matches.status` 还停在 `DRAFT`」这类**混搭快照**会被真实发给 UI。
+     * `distinctUntilChanged()` 只做相邻去重，**不是**一致性机制，救不了这个问题。
+     *
+     * ## 现在的一致性来源
+     *
+     * 1. `invalidationTrackerFlow` 只把「哪些表变了」当作**失效信号**（信号本身不带数据，
+     *    因此不存在「信号里的数据是旧版本」的可能）；
+     * 2. 每收到一个信号，就在**一个** `withTransaction` 里把四张表读完 —— 一次发射的全部字段
+     *    来自同一个数据库版本，跨表不变量（角色揭晓 ⟺ `revealedAt`、`status` ⟺ 事件重放结果等）
+     *    天然成立；
+     * 3. `mapLatest`：新信号到达时**取消在途读取**。若用 `map`，一个慢读的结果可能在更新的读
+     *    之后才返回，把旧版本覆盖到新版本之上（顺序错乱）；`mapLatest` 保证「最新信号胜出」，
+     *    中间被跳过的快照本来也不需要展示。
+     * 4. `emitInitialState = true`：订阅瞬间先发一次 `matches` 等表的表名集合，于是
+     *    **不用写一次库**就能拿到当前快照（UI 不会先空白再刷新）。
+     *
+     * ## 硬约束
+     *
+     * - 不得用全局 `Mutex` 或结果缓存「掩盖」版本问题：这里的正确性只来自事务边界；
+     * - 对局被删除时 `readBundleLocked` 返回 `null`，本 Flow 必须发射 `null`（而不是保留上一份快照）；
+     * - 四张表的表名必须与实体声明一致，漏一张就会「改了却不刷新」。
+     *
+     * `@OptIn(ExperimentalCoroutinesApi::class)` 只为 `mapLatest` 而加
+     * （它至今仍被 coroutines 标为实验性，但语义正是本处所需的「取消在途读取」）；
+     * Room 2.6.1 的 `invalidationTrackerFlow` 本身**不需要** opt-in，已用 `javap` 核实。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeBundle(matchId: MatchId): Flow<MatchBundle?> =
-        // NX-02：四路 Flow combine，Room WAL 下读一致；
-        // distinctUntilChanged 减少中间态重复重放
-        combine(
-            matchDao.observeById(matchId.raw),
-            participantDao.observeByMatch(matchId.raw),
-            roleDao.observeByMatch(matchId.raw),
-            eventDao.observeActive(matchId.raw)
-        ) { matchEntity, participants, roles, eventEntities ->
-            if (matchEntity == null) {
-                null
-            } else {
-                buildBundle(matchEntity, participants, roles, eventEntities)
-            }
-        }.distinctUntilChanged()
+        database.invalidationTrackerFlow(
+            "matches",
+            "participants",
+            "role_assignments",
+            "match_events",
+            emitInitialState = true
+        )
+            .mapLatest { database.withTransaction { readBundleLocked(matchId) } }
+            .distinctUntilChanged()
 
     override suspend fun getBundle(matchId: MatchId): MatchBundle? {
         // NX-02：四表读收进同一事务，避免撕裂读
