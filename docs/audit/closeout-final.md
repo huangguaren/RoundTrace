@@ -2,7 +2,7 @@
 
 日期：2026-11-03
 对比基线：`main@9d94040`（验收报告 `RoundTrace_Acceptance_2026-11-03.md`）
-本轮 HEAD：`c5def57`（本地）
+本轮 HEAD：`4da27a4`（已推送至 `origin/main`，远端 Actions 全绿）
 环境：Windows / JDK 17.0.13 (Microsoft) / Gradle wrapper / 16 逻辑核
 
 ## 1. 总判定
@@ -14,7 +14,7 @@
 | RT-NX03-RETRY 首页可恢复（P1） | **PASS** | `catch` 在单次查询流内，重试真正重建订阅；7 条用例 |
 | RT-NX03-PERF 复盘性能证据（P1） | **PARTIAL** | 快照调用次数有硬断言（PUBLIC=1）；耗时仅同环境对照，**无优化前后对照**（基线已含复用路径），5 项标 `NOT MEASURED` |
 | RT-NX01-EDGE 推论边界（P1） | **PASS** | 非法前提抑制数量结论；16 条边界用例；12 条 ruleId 不变 |
-| RT-CI-REGRESS 新提交保持可回归 | **PENDING** | 本地 `testDebugUnitTest` / `lintDebug` / `assembleDebug` 全通过；GitHub Actions 需推送后核对新 HEAD |
+| RT-CI-REGRESS 新提交保持可回归 | **PASS** | 远端 Actions `4da27a4` 全绿，11 步全 success；从其 `test-report` artifact 复核 71 类 / 543 用例 / 0 失败 |
 | RT-NX05-DEVICE 设备验收 | **CANCELLED** | 按要求取消，不作为发布闸门 |
 
 ## 2. 实测数据（本地，2026-11-03）
@@ -50,7 +50,7 @@
 
 **根因共性**：测试夹具每个任务只有一次提案（D1 隐藏）、fake 只抛异常而真实仓储返回错误（D3 隐藏）、规划器不比较新旧内容（D2）。修复时同时补上了多提案夹具与「返回 error 不抛异常」的 fake 开关，堵住同类缺陷再次被掩盖的路径。
 
-**第 2 轮**：见 §7（回归结论）。
+**第 2 轮**：对 `c5def57` 的独立回归（结论见本节末尾「第 2 轮结论」）。
 
 ## 5. 已知限制与残余技术债
 
@@ -72,11 +72,27 @@
 | NX-03 复盘 PASS（源码路径） | 保留并补定量证据 |
 | NX-01 PARTIAL：边界未充分验证 | 已补：16 条边界用例 + 非法前提抑制 |
 
-## 7. CI 状态
+## 7. CI 状态（已核对远端，非沿用旧绿灯）
 
-- 本地：`:app:testDebugUnitTest` PASS、`:app:lintDebug` PASS、`:app:assembleDebug` PASS（2026-11-03）。
-- 远端：**待推送后核对**。推送后须以新 HEAD 的 Actions 运行为准，不使用此前绿色结果。
+推送范围：`9d94040..4da27a4`（41 个提交之后的 5 个收口提交），远端 `main` 已跟上。
+
+**远端 Actions 运行（`4da27a4c4ba0801f2c7c7d3d3dade5b8a0330b0f`）**
+
+| 项 | 值 |
+|---|---|
+| Run ID | 41569499184（attempt 1） |
+| URL | https://github.com/huangguaren/RoundTrace/actions/runs/41569499184 |
+| 触发器 | `push` → `main` |
+| 总判定 | **success**（03:00:00Z 起，03:07:29Z 完成，约 7 分 29 秒） |
+| 步骤 | Set up job / checkout / setup-java / Setup Gradle / chmod gradlew / Remove CN mirrors / **Run unit tests** / **Run lint** / **Build debug APK** / Upload test report / Upload APK —— 11 步全部 `success` |
+| Artifact `test-report` | id 13200912443，75,909 B，未过期；**已下载核对 XML：71 类 / 543 用例 / 0 失败 / 0 错误 / 0 跳过**，与本地完全一致 |
+| Artifact `app-debug` | id 13200693085，19,633,733 B（zip 压缩体积，本地 APK 为 20,646,989 B），未过期 |
+| Artifacts 页 | https://github.com/huangguaren/RoundTrace/actions/runs/41569499184#artifacts |
+
+> 说明：`9d94040` 的旧绿色运行不作为本轮证据；以上数字取自上面这次**针对新 HEAD** 的运行，并从其 `test-report` artifact 内 XML 重新汇总，而非只看 job 颜色。
+
+**本地（2026-11-03）**：`:app:testDebugUnitTest` PASS（71 类 / 543 用例）、`:app:lintDebug` PASS（0 error / 52 warning）、`:app:assembleDebug` PASS。
 
 ## 8. 结论
 
-P0 的失败模式（历史记录被无意删除、失败显示假成功）已在实现与测试层面关闭，并经过独立 QA 两轮对抗性验证。P1 的三项（一致性、可恢复重试、推论边界）通过；性能项为 PARTIAL（调用次数可证、耗时对照不可复现）。唯一未闭环的是远端 CI 与人工目视验收。
+P0 的失败模式（历史记录被无意删除、失败显示假成功）已在实现与测试层面关闭，并经过独立 QA 两轮对抗性验证。P1 的三项（一致性、可恢复重试、推论边界）通过；性能项为 PARTIAL（调用次数可证、耗时对照不可复现）。远端 CI 已在新 HEAD 上跑绿并从 artifact 复核用例数；唯一未闭环的是 **Compose 渲染级与真机目视验收**（无测试基建，见 §5.1、§5.6）。
