@@ -28,6 +28,22 @@
 
 对比基线 446 用例：**+97**（NX-06 +44、NX-03/NX-01 +34、NX-02 +11、QA 缺陷回归 +8），未删除任何既有用例，未放宽任何既有断言（唯一调整的 3 处既有断言在 NX-06 首轮，全部为「加前置步骤 + 补更强约束」，已在 `closeout-progress.md` §1 记录）。
 
+**关键新增测试类（合计 96 条，另 1 条为既有类内追加）**
+
+| 测试类 | 用例 | 覆盖 |
+|---|---|---|
+| `AtomicHistoricalEditTest` | 20 | 真 Room + Robolectric，P0 原子性/回滚/过期预览/重复确认/无物理删除 |
+| `EditImpactPlannerTest` | 18 | 纯函数规划器，含 D1 归属与 D2 零变化回归 |
+| `EvidenceBoundaryTest` | 16 | NX-01 非法前提、人数/任务号越界、双失败门槛 |
+| `RecordHistoricalEditViewModelTest` | 14 | 预览态/取消/提交五分支/D3 假成功回归 |
+| `ObserveBundleConsistencyTest` | 11 | NX-02 单事务快照 + 四条跨表不变量 |
+| `ReplaySnapshotReuseTest` | 9 | 复盘快照复用、PUBLIC 仅一次 |
+| `HomeViewModelTest` | 7 | NX-03 首页 Loading/Error/Empty/Data、连续失败后恢复、切换筛选不返旧数据 |
+| `EvidencePremiseTest` | 表驱动 | 前提推导的各种牌数/结果组合 |
+| `ReplayAnalyzePerformanceTest` | 2 | 调用次数硬断言 + 耗时采样（不作为门槛） |
+
+**两处测量差异说明（不影响判定，如实记录）**：APK 体积本机 20,646,989 B、QA 独立构建 20,587,857 B（构建时点/中间产物不同）；`lintDebug` 本机 52 warning + 2 information、QA 构建 51 warning + 2 information，**两者均 0 error**，差异为 lint 基线缓存与报告生成时点差异。
+
 ## 3. P0 硬门槛核对
 
 | 门槛 | 结果 | 证据 |
@@ -50,7 +66,21 @@
 
 **根因共性**：测试夹具每个任务只有一次提案（D1 隐藏）、fake 只抛异常而真实仓储返回错误（D3 隐藏）、规划器不比较新旧内容（D2）。修复时同时补上了多提案夹具与「返回 error 不抛异常」的 fake 开关，堵住同类缺陷再次被掩盖的路径。
 
-**第 2 轮**：对 `c5def57` 的独立回归（结论见本节末尾「第 2 轮结论」）。
+**第 2 轮结论**（对 `c5def57` 的独立回归，QA 自建 `TempR2*.kt` 探针，完成后已删除、未入库）：**NX-06 由 FAIL 转为 PASS**。
+
+| 复核项 | QA 手法 | 结论 |
+|---|---|---|
+| D1 归属判定 | 同一任务两条提案（1 否决 + 2 通过），编辑被否决的 1 | 只动提案 1 自身那条的历史写入，**提案 2 的任务结果（MISSION_RESOLVED）与决议（APPROVED）保持 active**，撤 0 条 |
+| D2 零变化短路 | 打开历史提案 → 不改任何字段 → 直接保存 | `EditImpactPlan.affected` 为空；**0 条撤销、0 次历史表扫描写入**；`applyCalls == 0` |
+| D3 假成功 | fake 返回 `AppendResult.error`（**不抛异常**） | `savedMessage == null`、`errorMessage != null`，**不再显示「已保存」** |
+| 反向风险（是否修过头） | 改「人数」使已成立任务结果失效 | 合法的依赖撤销**仍会发生**，未被短路逻辑吃掉 |
+| 原子性 | 失败注入 / 同一 token 二次确认 | 全部回滚、第二次 `Success` 与 `StalePreview` 互斥命中 |
+| 不变量 | 四条跨表不变量 | 全部稳定，无 B06 撕裂 |
+| 全量回归 | 543 用例 | **543/543 通过，0 失败 0 跳过** |
+
+**遗留的 P2（不影响 PASS 判定，已登记为技术债见 §5.8）**：`leaderSeat` 单侧变更仍会以 `LEADER_CHANGED` 撤销整队——这是 `EditImpactPlanner` 的**既有设计选择**（队长变更后整队信息不再可信），**不是本轮回归引入的缺陷**；若产品希望「只改队长、保留队伍」，需改规划器语义，属独立一轮。
+
+**尚未被测试覆盖的两条行为**（QA 主动指出，避免「绿灯=全覆盖」的误读）：`MissionResolved` 事件编辑后的影响预览分组、以及 `REVIEW_ONLY` 标签在 UI 上的呈现；两者都只有代码路径证据（见 §5.1）。
 
 ## 5. 已知限制与残余技术债
 
@@ -61,6 +91,8 @@
 5. 四个 DAO 的单表 `observe*` 方法在生产路径已无调用方（保留作为 DAO 契约，`androidTest` 仍用 `observeById`）。
 6. 未做实体设备、低端机、超大历史（>1000 事件）压测；NX-05 已取消。
 7. 性能无优化前后对照：基线 `9d94040` 已包含快照复用路径，旧版本不可复现，故 `NOT MEASURED`。
+8. **`leaderSeat` 单侧修改会撤销整队（P2）**：`EditImpactPlanner` 认为「队长换了，原队伍信息不再可信」，因此 `LEADER_CHANGED` 会连带撤销 `TEAM_PROPOSED`/`TEAM_VOTE_RECORDED`。这是刻意语义而非缺陷，但对「只改队长、队伍照旧」的场景偏保守（会多一次人工重录）。QA 第 2 轮标注，待产品决策。
+9. **两条行为缺自动化覆盖**：`MissionResolved` 编辑的影响预览分组、`REVIEW_ONLY` 标签的 UI 呈现——只有代码路径 + `strings.xml` 证据，与 §5.1 的 Compose 基建缺口同源。
 
 ## 6. 与验收报告（9d94040）的差异
 
@@ -90,6 +122,10 @@
 | Artifacts 页 | https://github.com/huangguaren/RoundTrace/actions/runs/41569499184#artifacts |
 
 > 说明：`9d94040` 的旧绿色运行不作为本轮证据；以上数字取自上面这次**针对新 HEAD** 的运行，并从其 `test-report` artifact 内 XML 重新汇总，而非只看 job 颜色。
+
+**第二个提交（`b622ec3`，同样已核对）**：Run 41571720361，`success`，03:21:31Z → 03:29:37Z（约 8 分 6 秒），11 步全 success；artifact `test-report`(76,037 B, id 13202052093)、`app-debug`(19,634,172 B, id 13201967249)。URL https://github.com/huangguaren/RoundTrace/actions/runs/41571720361
+
+> `b622ec3` 及其后的提交均为 **docs-only**（只改 `docs/`），代码树与 `4da27a4` 完全一致，因此其运行结果可视为同一代码状态的重复验证。
 
 **本地（2026-11-03）**：`:app:testDebugUnitTest` PASS（71 类 / 543 用例）、`:app:lintDebug` PASS（0 error / 52 warning）、`:app:assembleDebug` PASS。
 
