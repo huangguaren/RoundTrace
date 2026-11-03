@@ -1,5 +1,8 @@
 package com.roundtrace.app.core.data
 
+import com.roundtrace.app.core.data.edit.ActiveEventToken
+import com.roundtrace.app.core.data.edit.EditImpactPlan
+import com.roundtrace.app.core.data.edit.EditPlanResult
 import com.roundtrace.app.core.model.EventId
 import com.roundtrace.app.core.model.MatchEvent
 import com.roundtrace.app.core.model.MatchId
@@ -56,8 +59,48 @@ interface MatchRepository {
     /**
      * 单事务撤销本局中逻辑位置大于 [logicalPosition] 的全部有效事件并重算状态。
      * 保留历史行与已有揭晓时间；边界包含在保留范围内，0 表示撤销全部事件。
+     *
+     * **NX-06 起不再提供 UI 入口**（`RecordScreen` 已删除「回滚到第 N 任务」按钮与弹窗）。
+     * 保留该 API 仅用于「整段历史确实整体作废」的低层修复场景：
+     * 历史安全编辑**禁止**使用它按位置推定受影响集合（PRD §2.2 决定性约束），
+     * 一律走 [planHistoricalEdit] + [applyConfirmedEdit] 的精确依赖撤销。
      */
     suspend fun retractAfterOrder(matchId: MatchId, logicalPosition: Int): AppendResult
+
+    /**
+     * 计算「修改某条历史事件」的影响范围（NX-06 / US-02：**只预览，不写库**）。
+     *
+     * 实现必须在**单个事务**内读一致快照 + 事件令牌，因此调用方得到的
+     * [EditImpactPlan.expectedActive] 与预览时的库内现状严格对应。
+     *
+     * 本方法**不允许**产生任何写入（含 `updatedAt` / 草稿 / 派生状态）。
+     */
+    suspend fun planHistoricalEdit(
+        matchId: MatchId,
+        targetEventId: EventId,
+        replacement: MatchEvent
+    ): EditPlanResult
+
+    /**
+     * 按用户确认的影响计划执行「修订 + 精确撤销」（NX-06 / US-04 / A3）。
+     *
+     * 语义（全部在**同一个 Room 事务**内完成，任一步失败整体回滚）：
+     * 1. 事务内重新计算 [EditImpactPlan]，与 [expectedTokens] 严格比对；
+     * 2. [confirmedRetractIds] 必须与**重算结果**的撤销集合完全相等（多、少、顺序无关但集合必须一致）；
+     * 3. 存在人工复核原因且具有破坏性时拒绝执行（[EditApplyResult.Conflict]）；
+     * 4. 复用修订策略与 `reviseWithSlot`（继承 `logicalPosition`、`revisionSeq + 1`、旧版本 `retracted = 1`）；
+     * 5. 逐条撤销确认过的事件，**每条必须恰好命中 1 行**，否则抛异常回滚；
+     * 6. 事务内只重算一次投影与 `updatedAt`。
+     *
+     * **禁止物理删除**：撤销 = `retracted = 1`，审计链保留。
+     */
+    suspend fun applyConfirmedEdit(
+        matchId: MatchId,
+        targetEventId: EventId,
+        replacement: MatchEvent,
+        confirmedRetractIds: List<EventId>,
+        expectedTokens: List<ActiveEventToken>
+    ): EditApplyResult
 
     suspend fun saveRoleAssignments(matchId: MatchId, assignments: List<RoleAssignment>)
 
@@ -163,6 +206,36 @@ enum class RepositoryError {
     WRITE_FAILED,
     INVALID_SUPERSEDE_TARGET,
     DUPLICATE_EVENT
+}
+
+/**
+ * 确认历史修改的结果（NX-06 / US-04～US-06）。
+ *
+ * **为什么要有独立的结果类型**：`reviseEvent()` 返回 [AppendResult]，只表达「写进去了没有」；
+ * 而确认编辑需要区分「写成功了」「你以为的现状已经变了」「规则判定有冲突」三种截然不同的后续动作。
+ * 把它们压成一个布尔（或只看 `Result.isSuccess`）正是 P0-2 的缺陷来源。
+ */
+sealed interface EditApplyResult {
+
+    /** 修订与全部撤销在同一事务内写完。 */
+    data class Success(val replacementEventId: EventId) : EditApplyResult
+
+    /**
+     * 预览已过期：库内现状与用户确认时看到的不一致（令牌不符 / 撤销集合不符）。
+     *
+     * **零写入**；调用方必须用 [freshPlan] 重新展示影响清单并让用户再确认一次。
+     */
+    data class StalePreview(val freshPlan: EditImpactPlan) : EditApplyResult
+
+    /**
+     * 规则判定存在必须人工处理的冲突，且本次修改会撤销记录 → 拒绝执行，**零写入**。
+     *
+     * @param reasons 可读原因（直接展示）
+     */
+    data class Conflict(val reasons: List<String>) : EditApplyResult
+
+    /** 写库失败（事务已整体回滚）。 */
+    data class Failed(val error: RepositoryError) : EditApplyResult
 }
 
 /** 首页筛选（端口层，与 UI 的 `HomeFilter` 解耦）。 */
