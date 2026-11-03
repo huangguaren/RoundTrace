@@ -369,6 +369,21 @@
     <string name="replay_public_facts_title">公开事实</string>
     <string name="replay_no_findings">暂无可用分析</string>
 
+    <!-- 玩家行为时间线（F05-01） -->
+    <string name="replay_mode_overview">视角复盘</string>
+    <string name="replay_trace_title">玩家时间线</string>
+    <string name="replay_trace_seat_section">玩家</string>
+    <string name="replay_trace_quest_section">任务</string>
+    <string name="replay_trace_category_section">类别</string>
+    <string name="replay_trace_seat_desc">查看 %1$d 号的记录</string>
+    <string name="replay_trace_quest_all_desc">筛选全部任务</string>
+    <string name="replay_trace_quest_desc">筛选第 %1$d 任务</string>
+    <string name="replay_trace_category_all_desc">筛选全部类别</string>
+    <string name="replay_trace_category_desc">筛选类别：%1$s</string>
+    <string name="replay_trace_empty">该玩家在当前时间范围内暂无可展示的记录</string>
+    <string name="replay_trace_item_desc">跳到第 %1$d 个事件</string>
+    <string name="replay_trace_fact_unknown">（记录为未知）</string>
+
     <!-- 设置页 -->
     <string name="settings_title">设置</string>
     <string name="settings_theme_title">主题</string>

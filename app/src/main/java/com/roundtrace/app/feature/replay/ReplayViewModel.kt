@@ -9,7 +9,11 @@ import com.roundtrace.app.core.knowledge.ReplayAnalyzer
 import com.roundtrace.app.core.model.GamePosition
 import com.roundtrace.app.core.model.MatchId
 import com.roundtrace.app.core.model.Perspective
+import com.roundtrace.app.core.model.SeatId
+import com.roundtrace.app.core.replay.PlayerTraceBuilder
+import com.roundtrace.app.core.replay.PlayerTraceCategory
 import com.roundtrace.app.core.replay.TimelineBuilder
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,13 +43,25 @@ class ReplayViewModel(
     private val requestedMode = MutableStateFlow(Perspective.PUBLIC)
     private val godViewBlocked = MutableStateFlow(false)
 
+    /** 玩家行为时间线（F05-01）：座位与两个筛选条件。 */
+    private val traceSeat = MutableStateFlow<SeatId?>(null)
+    private val traceQuestFilter = MutableStateFlow<Int?>(null)
+    private val traceCategoryFilter = MutableStateFlow<PlayerTraceCategory?>(null)
+
+    /** 三个筛选条件合成一路，避免 `combine` 超过 5 路后失去类型安全。 */
+    private val traceFilters: Flow<TraceFilters> =
+        combine(traceSeat, traceQuestFilter, traceCategoryFilter) { seat, quest, category ->
+            TraceFilters(seat = seat, questNo = quest, category = category)
+        }
+
     val uiState: StateFlow<ReplayUiState> = combine(
         repository.observeBundle(matchId),
         requestedOrder,
         requestedMode,
-        godViewBlocked
-    ) { bundle, order, mode, blocked ->
-        buildUiState(bundle, order, mode, blocked)
+        godViewBlocked,
+        traceFilters
+    ) { bundle, order, mode, blocked, filters ->
+        buildUiState(bundle, order, mode, blocked, filters)
     }
         .catch { throwable ->
             emit(
@@ -84,6 +100,12 @@ class ReplayViewModel(
             }
 
             ReplayAction.ClearGodViewBlocked -> godViewBlocked.value = false
+
+            is ReplayAction.SelectPlayerTraceSeat -> traceSeat.value = action.seat
+
+            is ReplayAction.SetPlayerTraceQuestFilter -> traceQuestFilter.value = action.questNo
+
+            is ReplayAction.SetPlayerTraceCategoryFilter -> traceCategoryFilter.value = action.category
         }
     }
 
@@ -101,7 +123,8 @@ class ReplayViewModel(
         bundle: MatchBundle?,
         requestedOrder: Int?,
         requestedMode: Perspective,
-        blocked: Boolean
+        blocked: Boolean,
+        filters: TraceFilters
     ): ReplayUiState {
         if (bundle == null) {
             return ReplayUiState(isLoading = false, errorMessage = "对局不存在或已被删除")
@@ -112,6 +135,8 @@ class ReplayViewModel(
         val latestOrder = bundle.events.maxOfOrNull { it.occurredOrder } ?: 0
         val at = GamePosition(requestedOrder ?: latestOrder, questNo = null, proposalNo = null)
         val observer = bundle.config.mySeat
+        val playerCount = bundle.config.playerCount
+        val resolvedTraceSeat = resolveTraceSeat(filters.seat, observer, playerCount)
 
         // 先用公开视角探一次，拿到 canOpenGodView（它不依赖视角本身）
         val probe = runCatching {
@@ -120,11 +145,14 @@ class ReplayViewModel(
             return ReplayUiState(
                 isLoading = false,
                 matchTitle = bundle.summary.title,
-                playerCount = bundle.config.playerCount,
+                playerCount = playerCount,
                 at = at,
                 latestOrder = latestOrder,
                 mode = requestedMode,
                 observerSeat = observer,
+                playerTraceSeat = resolvedTraceSeat,
+                playerTraceQuestFilter = filters.questNo,
+                playerTraceCategoryFilter = filters.category,
                 errorMessage = throwable.message ?: "视角计算失败"
             )
         }
@@ -148,31 +176,37 @@ class ReplayViewModel(
                 return ReplayUiState(
                     isLoading = false,
                     matchTitle = bundle.summary.title,
-                    playerCount = bundle.config.playerCount,
+                    playerCount = playerCount,
                     at = at,
                     latestOrder = latestOrder,
                     mode = Perspective.PUBLIC,
                     observerSeat = observer,
+                    playerTraceSeat = resolvedTraceSeat,
+                    playerTraceQuestFilter = filters.questNo,
+                    playerTraceCategoryFilter = filters.category,
                     canOpenGodView = probe.canOpenGodView,
                     errorMessage = throwable.message ?: "视角计算失败"
                 )
             }
         }
 
+        // 视角过滤只做一次，findings / timeline / playerTrace 共用同一份可见历史
+        // （重复过滤不算错，但会让「同一位置三个视图看到的事件集合不一致」这种 bug 有缝可钻）
+        val visibleEvents = com.roundtrace.app.core.replay.VisibleEventPolicy.forPerspective(
+            events = bundle.events,
+            mode = effectiveMode,
+            observerSeat = observer
+        )
+
         // NX-03：直接用已算好的 snapshot，不再让 analyzeAt 内部重复创建快照
         val findings = runCatching {
-            val visibleHistory = com.roundtrace.app.core.replay.VisibleEventPolicy.forPerspective(
-                events = bundle.events,
-                mode = effectiveMode,
-                observerSeat = observer
-            ).filter { it.occurredOrder <= at.occurredOrder }
-            analyzer.analyze(snapshot, visibleHistory)
+            analyzer.analyze(snapshot, visibleEvents.filter { it.occurredOrder <= at.occurredOrder })
         }.getOrDefault(emptyList())
 
         return ReplayUiState(
             isLoading = false,
             matchTitle = bundle.summary.title,
-            playerCount = bundle.config.playerCount,
+            playerCount = playerCount,
             at = at,
             latestOrder = latestOrder,
             mode = effectiveMode,
@@ -181,17 +215,50 @@ class ReplayViewModel(
             findings = findings,
             // 时间线同样受可见性约束：公开视角不得出现私人笔记/私有声称
             // （RecordScreen 那条时间线服务「本人记录」，不受影响，故只在此处过滤）
-            timeline = TimelineBuilder.build(
-                events = com.roundtrace.app.core.replay.VisibleEventPolicy.forPerspective(
+            timeline = TimelineBuilder.build(events = visibleEvents, upTo = at.occurredOrder),
+            playerTraceSeat = resolvedTraceSeat,
+            playerTraceQuestFilter = filters.questNo,
+            playerTraceCategoryFilter = filters.category,
+            // 玩家行为时间线：同一份 bundle 快照 + 同一份可见历史派生，
+            // 不新增 DB 读取、不跨快照缓存（B29）
+            playerTraceItems = if (resolvedTraceSeat == null) {
+                emptyList()
+            } else {
+                PlayerTraceBuilder.build(
                     events = bundle.events,
+                    playerSeat = resolvedTraceSeat,
+                    atOrder = at.occurredOrder,
                     mode = effectiveMode,
-                    observerSeat = observer
-                ),
-                upTo = at.occurredOrder
-            ),
+                    observerSeat = observer,
+                    playerCount = playerCount,
+                    questFilter = filters.questNo,
+                    categoryFilter = filters.category?.let { setOf(it) }
+                )
+            },
             canOpenGodView = probe.canOpenGodView,
             godViewBlocked = blocked,
             errorMessage = null
         )
     }
+
+    /**
+     * 默认座位：观察者座位合法时选观察者，否则 1 号。
+     *
+     * 用户显式选择优先；但选择越界（人数被改小、导入了别的对局）时**回落到默认**，
+     * 而不是把非法座位传下去 —— UI 的座位条只列 1..playerCount，选中态必须能对上。
+     */
+    private fun resolveTraceSeat(requested: SeatId?, observer: SeatId?, playerCount: Int): SeatId? {
+        if (playerCount <= 0) return null
+        val valid = 1..playerCount
+        return requested?.takeIf { it in valid }
+            ?: observer?.takeIf { it in valid }
+            ?: 1
+    }
+
+    /** 玩家行为时间线的筛选条件（合成一路流用）。 */
+    private data class TraceFilters(
+        val seat: SeatId?,
+        val questNo: Int?,
+        val category: PlayerTraceCategory?
+    )
 }

@@ -284,8 +284,14 @@ object TimelineBuilder {
             text.take(MAX_CLAIM_TEXT_LENGTH) + "…"
         }
 
-    /** 角色名中文标签（仅供时间线展示；其余领域层不产出 UI 文案，见 D6）。 */
-    private fun roleLabel(roleName: String): String = when (roleName) {
+    /**
+     * 角色名中文标签。
+     *
+     * `internal`（而非 `private`）：`PlayerTraceBuilder` 复用同一张标签表，
+     * 避免「时间线写梅林、玩家轨迹写 MERLIN」这种同一事实两种叫法。
+     * 仅供展示；其余领域层不产出 UI 文案（见 D6）。
+     */
+    internal fun roleLabel(roleName: String): String = when (roleName) {
         "MERLIN" -> "梅林"
         "PERCIVAL" -> "派西维尔"
         "LOYAL_SERVANT" -> "忠臣"
@@ -297,8 +303,8 @@ object TimelineBuilder {
         else -> roleName
     }
 
-    /** 发言类型中文标签。 */
-    private fun claimTypeLabel(raw: String): String = when (raw) {
+    /** 发言类型中文标签（`internal`：与 `PlayerTraceBuilder` 共用）。 */
+    internal fun claimTypeLabel(raw: String): String = when (raw) {
         "SUSPECT" -> "怀疑"
         "PROTECT" -> "保护"
         "ROLE_CLAIM" -> "跳身份"
@@ -310,8 +316,8 @@ object TimelineBuilder {
         else -> raw
     }
 
-    /** 主观判断类型中文标签。 */
-    private fun beliefTypeLabel(raw: String): String = when (raw) {
+    /** 主观判断类型中文标签（`internal`：与 `PlayerTraceBuilder` 共用）。 */
+    internal fun beliefTypeLabel(raw: String): String = when (raw) {
         "SUSPECT" -> "怀疑"
         "TRUST" -> "信任"
         "ROLE_GUESS" -> "猜身份"

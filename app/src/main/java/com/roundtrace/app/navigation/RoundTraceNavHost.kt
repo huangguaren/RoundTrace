@@ -140,40 +140,53 @@ fun RoundTraceNavHost(
         }
 
         composable(Routes.RECORDS) {
+            val homeViewModel: HomeViewModel = viewModel(
+                factory = ViewModelFactories.home(container)
+            )
+            val state by homeViewModel.uiState.collectAsStateWithLifecycle()
+
             RoundTraceScaffold(
                 title = stringResource(R.string.records_title),
                 selectedRoute = Routes.RECORDS,
                 onSelectDestination = navigateToTab
             ) { contentPadding ->
-                // 记录 Tab 在没有选中对局时展示空态：真实录入入口是「首页 → 某局 → 记录」
-                EmptyState(
-                    icon = Icons.Outlined.EditNote,
-                    title = stringResource(R.string.records_empty_title),
-                    description = stringResource(R.string.records_empty_desc),
-                    actionLabel = stringResource(R.string.records_empty_action),
-                    onAction = { navigateToTab(Routes.HOME) },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(contentPadding)
+                // UX-01：记录 Tab 直接展示对局列表，点击进入现场记录
+                HomeScreen(
+                    state = state,
+                    onCreateMatch = { navController.navigate(Routes.CREATE_MATCH) },
+                    onOpenMatch = { matchId -> navController.navigate(Routes.record(matchId)) },
+                    onFilterChange = homeViewModel::onFilterChange,
+                    onRetry = homeViewModel::retry,
+                    contentPadding = contentPadding,
+                    onRenameMatch = homeViewModel::rename,
+                    onDeleteMatch = homeViewModel::delete,
+                    onOpenDetail = { matchId -> navController.navigate(Routes.detail(matchId)) }
                 )
             }
         }
 
         composable(Routes.REVIEW) {
+            val homeViewModel: HomeViewModel = viewModel(
+                factory = ViewModelFactories.home(container)
+            )
+            val state by homeViewModel.uiState.collectAsStateWithLifecycle()
+
             RoundTraceScaffold(
                 title = stringResource(R.string.review_title),
                 selectedRoute = Routes.REVIEW,
                 onSelectDestination = navigateToTab
             ) { contentPadding ->
-                EmptyState(
-                    icon = Icons.Outlined.Insights,
-                    title = stringResource(R.string.review_empty_title),
-                    description = stringResource(R.string.review_empty_desc),
-                    actionLabel = stringResource(R.string.review_empty_action),
-                    onAction = { navigateToTab(Routes.RECORDS) },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(contentPadding)
+                // UX-01：复盘 Tab 直接展示对局列表，点击进入复盘
+                HomeScreen(
+                    state = state,
+                    onCreateMatch = { navController.navigate(Routes.CREATE_MATCH) },
+                    onOpenMatch = { matchId -> navController.navigate(Routes.replay(matchId)) },
+                    onFilterChange = homeViewModel::onFilterChange,
+                    onRetry = homeViewModel::retry,
+                    contentPadding = contentPadding,
+                    onRenameMatch = homeViewModel::rename,
+                    onDeleteMatch = homeViewModel::delete,
+                    onOpenDetail = { matchId -> navController.navigate(Routes.detail(matchId)) }
                 )
             }
         }

@@ -7,13 +7,19 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -24,6 +30,7 @@ import com.roundtrace.app.core.ui.component.PerspectiveSwitcher
 import com.roundtrace.app.core.ui.component.TimelineEventCard
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.PanelShape
+import com.roundtrace.app.core.ui.theme.PillShape
 
 /**
  * 复盘页（TASKS.md T58）。
@@ -45,6 +52,9 @@ fun ReplayScreen(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues()
 ) {
+    // 复盘主视图 / 玩家时间线 的切换只在本页内，不新增导航路由
+    var showPlayerTrace by rememberSaveable { mutableStateOf(false) }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -69,69 +79,164 @@ fun ReplayScreen(
                 )
             }
 
-            else -> LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = Dimens.PageHorizontalPadding,
-                    end = Dimens.PageHorizontalPadding,
-                    top = Dimens.Spacing8,
-                    bottom = Dimens.Spacing32
-                ),
-                verticalArrangement = Arrangement.spacedBy(Dimens.Spacing12)
-            ) {
-                item {
-                    PerspectiveSwitcher(
-                        selected = state.mode,
-                        godViewEnabled = state.canOpenGodView,
-                        onSelect = { mode -> onAction(ReplayAction.SelectPerspective(mode)) },
-                        onGodViewBlocked = {
-                            onAction(ReplayAction.SelectPerspective(Perspective.GOD_AFTER_REVEAL))
-                        }
-                    )
-                }
-                item {
-                    PerspectiveBanner(state = state)
-                }
-                item {
-                    Text(
-                        text = stringResource(R.string.evidence_section_title),
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                }
-                if (state.hasNoFindings) {
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(Dimens.Spacing8)) {
-                            Text(
-                                text = stringResource(R.string.replay_no_findings),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+            else -> Column(modifier = Modifier.fillMaxSize()) {
+                ReplayViewSwitcher(
+                    playerTraceSelected = showPlayerTrace,
+                    onSelectOverview = { showPlayerTrace = false },
+                    onSelectPlayerTrace = { showPlayerTrace = true }
+                )
+                if (showPlayerTrace) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        // 视角切换必须留在这一视图里：私人判断是否显示完全取决于视角，
+                        // 把开关藏到另一个视图里，用户会以为「这个人没有记录」。
+                        PerspectiveSwitcher(
+                            selected = state.mode,
+                            godViewEnabled = state.canOpenGodView,
+                            onSelect = { mode -> onAction(ReplayAction.SelectPerspective(mode)) },
+                            onGodViewBlocked = {
+                                onAction(ReplayAction.SelectPerspective(Perspective.GOD_AFTER_REVEAL))
+                            },
+                            modifier = Modifier.padding(
+                                start = Dimens.PageHorizontalPadding,
+                                end = Dimens.PageHorizontalPadding,
+                                top = Dimens.Spacing8
                             )
-                            androidx.compose.material3.OutlinedButton(
-                                onClick = onBackToRecord,
-                                shape = MaterialTheme.shapes.small
-                            ) {
-                                Text(text = stringResource(R.string.review_empty_action))
+                        )
+                        PlayerTraceSection(
+                            playerCount = state.playerCount,
+                            selectedSeat = state.playerTraceSeat,
+                            questFilter = state.playerTraceQuestFilter,
+                            categoryFilter = state.playerTraceCategoryFilter,
+                            items = state.playerTraceItems,
+                            onSelectSeat = { seat ->
+                                onAction(ReplayAction.SelectPlayerTraceSeat(seat))
+                            },
+                            onSelectQuest = { questNo ->
+                                onAction(ReplayAction.SetPlayerTraceQuestFilter(questNo))
+                            },
+                            onSelectCategory = { category ->
+                                onAction(ReplayAction.SetPlayerTraceCategoryFilter(category))
+                            },
+                            onSelectItem = { occurredOrder ->
+                                onAction(ReplayAction.SelectPosition(occurredOrder))
+                                // 跳回主视图，否则「跳转」的结果在时间线里看不见
+                                showPlayerTrace = false
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = Dimens.PageHorizontalPadding,
+                            end = Dimens.PageHorizontalPadding,
+                            top = Dimens.Spacing8,
+                            bottom = Dimens.Spacing32
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(Dimens.Spacing12)
+                    ) {
+                        item {
+                            PerspectiveSwitcher(
+                                selected = state.mode,
+                                godViewEnabled = state.canOpenGodView,
+                                onSelect = { mode -> onAction(ReplayAction.SelectPerspective(mode)) },
+                                onGodViewBlocked = {
+                                    onAction(ReplayAction.SelectPerspective(Perspective.GOD_AFTER_REVEAL))
+                                }
+                            )
+                        }
+                        item {
+                            PerspectiveBanner(state = state)
+                        }
+                        item {
+                            Text(
+                                text = stringResource(R.string.evidence_section_title),
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                        if (state.hasNoFindings) {
+                            item {
+                                Column(verticalArrangement = Arrangement.spacedBy(Dimens.Spacing8)) {
+                                    Text(
+                                        text = stringResource(R.string.replay_no_findings),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    androidx.compose.material3.OutlinedButton(
+                                        onClick = onBackToRecord,
+                                        shape = MaterialTheme.shapes.small
+                                    ) {
+                                        Text(text = stringResource(R.string.review_empty_action))
+                                    }
+                                }
                             }
                         }
+                        state.findings.forEach { finding ->
+                            item { EvidenceCard(finding = finding) }
+                        }
+                        item {
+                            Text(
+                                text = stringResource(R.string.timeline_title),
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                        state.timeline.forEach { entry ->
+                            item { TimelineEventCard(entry = entry) }
+                        }
                     }
-                }
-                state.findings.forEach { finding ->
-                    item { EvidenceCard(finding = finding) }
-                }
-                item {
-                    Text(
-                        text = stringResource(R.string.timeline_title),
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                }
-                state.timeline.forEach { entry ->
-                    item { TimelineEventCard(entry = entry) }
                 }
             }
         }
     }
+}
+
+/**
+ * 复盘主视图 / 玩家时间线 的页内切换。
+ *
+ * 刻意不用底部导航或 NavHost 路由：这是同一份复盘数据的两种看法，
+ * 换页会丢掉「当前位置 / 视角」，用户还得重新选一遍。
+ */
+@Composable
+private fun ReplayViewSwitcher(
+    playerTraceSelected: Boolean,
+    onSelectOverview: () -> Unit,
+    onSelectPlayerTrace: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = Dimens.PageHorizontalPadding,
+                end = Dimens.PageHorizontalPadding,
+                top = Dimens.Spacing8
+            ),
+        horizontalArrangement = Arrangement.spacedBy(Dimens.Spacing8)
+    ) {
+        ReplayViewChip(
+            label = stringResource(R.string.replay_mode_overview),
+            selected = !playerTraceSelected,
+            onClick = onSelectOverview
+        )
+        ReplayViewChip(
+            label = stringResource(R.string.replay_trace_title),
+            selected = playerTraceSelected,
+            onClick = onSelectPlayerTrace
+        )
+    }
+}
+
+@Composable
+private fun ReplayViewChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(text = label, style = MaterialTheme.typography.labelMedium) },
+        shape = PillShape,
+        modifier = Modifier.heightIn(min = Dimens.MinTouchTarget)
+    )
 }
 
 @Composable
