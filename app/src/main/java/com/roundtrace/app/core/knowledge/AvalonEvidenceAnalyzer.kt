@@ -59,6 +59,44 @@ class AvalonEvidenceAnalyzer(
             .keys
         val level = observationLevel(snapshot)
 
+        // —— NX-01 阶段 D：非法前提的可追溯数据质量说明 ——
+        // 规则矩阵只在 5..10 人 × 任务 1..5 上有定义；任何「数量 / 门槛」结论都必须先过这道闸门。
+        // 复用 A12（不新增 ruleId，ALL_RULE_IDS 恒为 12 条），level 恒为 UNKNOWN。
+        val playerCount = snapshot.playerCount
+        val playerCountValid = rules.expectedTeamSizeFor(playerCount, 1) > 0
+        val dataQuality = LinkedHashMap<String, EvidenceFinding>()
+        fun noteDataQuality(
+            key: String,
+            label: String,
+            explanation: String,
+            questNo: Int? = null,
+            seats: List<SeatId> = emptyList(),
+            sourceEventIds: List<com.roundtrace.app.core.model.EventId> = emptyList()
+        ) {
+            val id = "A12-dq-$key"
+            if (dataQuality.containsKey(id)) return
+            dataQuality[id] = EvidenceFinding(
+                id = id,
+                label = label,
+                level = EvidenceLevel.UNKNOWN,
+                explanation = explanation,
+                ruleId = RULE_A12,
+                sourceEventIds = sourceEventIds,
+                relatedSeats = seats,
+                relatedQuestNo = questNo
+            )
+        }
+        if (!playerCountValid) {
+            noteDataQuality(
+                key = "player-count",
+                label = "对局人数 $playerCount 不在规则支持范围（5–10 人）",
+                explanation = "规则矩阵只定义 $MIN_SUPPORTED_PLAYERS–$MAX_SUPPORTED_PLAYERS 人局。" +
+                    "当前记录的人数为 $playerCount，队伍人数、失败牌门槛、好人/坏人总数都无法确定，" +
+                    "所有依赖规则矩阵的确定性结论（队伍人数应为 N、任务门槛、队伍内至少几名坏人）" +
+                    "均已抑制。请先核对对局人数设置，再采信任何数量结论。"
+            )
+        }
+
         // —— A11：夜间确定的坏人（观察者专属）——
         snapshot.privateRoleFacts
             .filter { it.relation == PrivateRelation.KNOWN_EVIL }
@@ -81,8 +119,23 @@ class AvalonEvidenceAnalyzer(
         val proposals = effectiveHistory.filterIsInstance<TeamProposed>().groupBy { it.questNo }
         proposals.forEach { (questNo, list) ->
             list.forEach { proposal ->
-                // A01：队伍人数应为 N 人
-                val expected = rules.expectedTeamSizeFor(snapshot.playerCount, questNo)
+                val expected = rules.expectedTeamSizeFor(playerCount, questNo)
+                // NX-01-D：任务号不在 1..5（或人数非法）时规则矩阵没有定义，
+                // 「队伍应为 N 人」这类数量结论必须抑制，只留数据质量提示。
+                if (expected <= 0) {
+                    noteDataQuality(
+                        key = "quest-$questNo",
+                        label = "第 $questNo 个任务号不在规则范围（1–$QUEST_COUNT）",
+                        explanation = "阿瓦隆标准局只有 $QUEST_COUNT 个任务。任务号 $questNo " +
+                            "（或对局人数 $playerCount）超出规则矩阵，" +
+                            "该任务的队伍人数、失败牌门槛与「队伍内至少几名坏人」都无法按规则确定，" +
+                            "相关确定性结论已抑制；请核对任务序号后重新查看。",
+                        questNo = questNo,
+                        sourceEventIds = listOf(proposal.eventId)
+                    )
+                }
+
+                // A01：队伍人数应为 N 人（仅在规则矩阵有定义时）
                 if (expected > 0) {
                     findings += EvidenceFinding(
                         id = "A01-$questNo-${proposal.proposalNo}",
@@ -97,28 +150,53 @@ class AvalonEvidenceAnalyzer(
                 }
 
                 // A05：该队伍至少含 k 名坏人（用 bounds，绝不点名）
-                val bounds = bounds(
-                    teamSeats = proposal.teamSeats,
-                    goodCount = snapshot.goodCount,
-                    evilCount = snapshot.evilCount,
-                    knownGood = knownGood,
-                    knownEvil = knownEvil
-                )
-                if (bounds.atLeastOneEvil) {
-                    findings += EvidenceFinding(
-                        id = "A05-$questNo-${proposal.proposalNo}",
-                        label = "该队伍至少含 ${bounds.minEvil} 名坏人",
-                        level = level,
-                        explanation = "按你确定的好人/坏人座位与规则矩阵推导：" +
-                            "队伍 ${proposal.teamSeats.size} 人，最多只有 " +
-                            "${proposal.teamSeats.size - bounds.minEvil} 人可以确定是好人，" +
-                            "因此至少 ${bounds.minEvil} 名是坏人。" +
-                            "**但无法据此确定具体是哪一位**（可能是队伍中任一身份未定者）。",
-                        ruleId = RULE_A05,
-                        sourceEventIds = listOf(proposal.eventId),
-                        relatedSeats = proposal.teamSeats,
-                        relatedQuestNo = questNo
+                //
+                // NX-01-D 的两道前提：
+                // 1. 规则矩阵必须可用（人数 5..10、任务 1..5）。矩阵不可用时 goodCount/evilCount 为 0，
+                //    bounds() 会算出「minEvil = 队伍人数」——那是**不可能**的结论
+                //    （例如「这支 5 人队伍至少含 5 名坏人」），必须抑制。
+                // 2. 提案的座位名单必须合法（都在 1..playerCount 且不重复）。
+                //    名单畸形时「这支队」本身不可信，依赖名单的推论一并抑制。
+                val proposalSeatsWellFormed = seatsWellFormed(proposal.teamSeats, playerCount)
+                if (!proposalSeatsWellFormed) {
+                    noteDataQuality(
+                        key = "proposal-seats-$questNo-${proposal.proposalNo}",
+                        label = "第 $questNo 任务第 ${proposal.proposalNo} 次提案的队伍座位异常",
+                        explanation = "提案记录的队伍座位为 [${proposal.teamSeats.joinToString(",")}]，" +
+                            "存在越界（合法范围 1..$playerCount）或重复座位。" +
+                            "依赖这份名单的推论（如「该队伍至少含几名坏人」）已被抑制；" +
+                            "请先修正提案的队员记录。",
+                        questNo = questNo,
+                        seats = proposal.teamSeats,
+                        sourceEventIds = listOf(proposal.eventId)
                     )
+                }
+                if (expected > 0 && proposalSeatsWellFormed && snapshot.goodCount > 0) {
+                    val bounds = bounds(
+                        teamSeats = proposal.teamSeats,
+                        goodCount = snapshot.goodCount,
+                        evilCount = snapshot.evilCount,
+                        knownGood = knownGood,
+                        knownEvil = knownEvil
+                    )
+                    // 自洽闸门：下界不可能超过队伍人数（防御性，正常输入永远成立）
+                    val minEvilFeasible = bounds.minEvil <= proposal.teamSeats.distinct().size
+                    if (bounds.atLeastOneEvil && minEvilFeasible) {
+                        findings += EvidenceFinding(
+                            id = "A05-$questNo-${proposal.proposalNo}",
+                            label = "该队伍至少含 ${bounds.minEvil} 名坏人",
+                            level = level,
+                            explanation = "按你确定的好人/坏人座位与规则矩阵推导：" +
+                                "队伍 ${proposal.teamSeats.size} 人，最多只有 " +
+                                "${proposal.teamSeats.size - bounds.minEvil} 人可以确定是好人，" +
+                                "因此至少 ${bounds.minEvil} 名是坏人。" +
+                                "**但无法据此确定具体是哪一位**（可能是队伍中任一身份未定者）。",
+                            ruleId = RULE_A05,
+                            sourceEventIds = listOf(proposal.eventId),
+                            relatedSeats = proposal.teamSeats,
+                            relatedQuestNo = questNo
+                        )
+                    }
                 }
             }
         }
@@ -170,12 +248,44 @@ class AvalonEvidenceAnalyzer(
             val questNo = mission.questNo
             val premise = missionEvidencePremise(mission, snapshot.playerCount, rules)
             val threshold = premise.threshold
+            // NX-01-D：规则矩阵是否有定义（人数 5..10 且任务 1..5）。
+            // 没有定义时门槛/队伍人数都是无意义值（failThreshold 对任何输入都返回 1 或 2），
+            // 因此 A03/A06 一类「门槛 / 数量」结论必须抑制。
+            val ruleMatrixValid = premise.expectedTeamSize > 0
+            // 失败牌数超出 0..队伍规模 → 无法推导结果，也不能声称「至少 f 名坏人」
+            val failCountInRange = premise.failCount != null &&
+                premise.failCount in 0..premise.teamSizeForCheck
+            if (!ruleMatrixValid) {
+                noteDataQuality(
+                    key = "quest-$questNo",
+                    label = "第 $questNo 个任务号不在规则范围（1–$QUEST_COUNT）",
+                    explanation = "阿瓦隆标准局只有 $QUEST_COUNT 个任务。任务号 $questNo " +
+                        "（或对局人数 $playerCount）超出规则矩阵，" +
+                        "该任务的队伍人数、失败牌门槛与「队伍内至少几名坏人」都无法按规则确定，" +
+                        "相关确定性结论已抑制；请核对任务序号后重新查看。",
+                    questNo = questNo,
+                    sourceEventIds = listOf(mission.eventId)
+                )
+            }
+            if (premise.failCountKnown && !failCountInRange) {
+                noteDataQuality(
+                    key = "failcount-$questNo",
+                    label = "第 $questNo 任务的失败牌数超出队伍规模",
+                    explanation = "记录的失败牌数为 ${premise.failCount}，" +
+                        "而该队伍规模只有 ${premise.teamSizeForCheck} 人。" +
+                        "失败牌数必须落在 0..队伍人数之间，「由失败牌数推出队伍内坏人数下界」" +
+                        "以及「由失败牌数推导任务成败」的结论均已抑制；" +
+                        "任务胜负计数仍按明确记录的结果推进（B34）。",
+                    questNo = questNo,
+                    sourceEventIds = listOf(mission.eventId)
+                )
+            }
 
             // A03：任务门槛。
             // 触发条件从「failCount 已记录」放宽为「任务层面有任何已记录信息」——
             // 「结果为成功但牌数未知」恰恰是最需要解释门槛的场景（8 人局第 4 任务
             // 门槛 2，出现 1 张失败牌仍成功）。
-            if ((premise.failCountKnown || premise.outcomeKnown) && snapshot.playerCount > 0) {
+            if (ruleMatrixValid && (premise.failCountKnown || premise.outcomeKnown)) {
                 findings += EvidenceFinding(
                     id = "A03-$questNo",
                     label = "第 $questNo 任务需 ≥$threshold 张失败牌",
@@ -192,7 +302,7 @@ class AvalonEvidenceAnalyzer(
             // A06：f 张失败牌 → 队伍内至少 f 名坏人。
             // 座位名单畸形（越界/重复）时抑制——「这支队伍」的名单本身不可信（A12-team 会说明）。
             // failCount 非法（超出 0..队伍人数）时也抑制——不能从 99 张失败牌推出 99 名坏人。
-            if (premise.failCountKnown && (premise.failCount ?: 0) > 0 &&
+            if (ruleMatrixValid && failCountInRange && (premise.failCount ?: 0) > 0 &&
                 !premise.seatsMalformed && premise.derivedOutcome != null
             ) {
                 val fail = premise.failCount ?: 0
@@ -291,6 +401,11 @@ class AvalonEvidenceAnalyzer(
                         "队员不完整时，「谁在这支队伍里」的推论不可靠。" +
                             "任务结果本身不受影响：只要结果明确，任务仍计入好人/坏人的胜负计数，" +
                             "不以队员完整性为前提（B34：结果明确即计数）。"
+                    premise.expectedTeamSize <= 0 ->
+                        "记录了 ${mission.teamSeats?.size ?: 0} 名队员，但本任务的期望人数" +
+                            "（规则矩阵）在人数/任务号越界时无定义，无法核对该名单是否完整。" +
+                            "「谁在这支队伍里」的推论不可靠。任务结果本身不受影响：" +
+                            "只要结果明确，任务仍计入好人/坏人的胜负计数（B34）。"
                     else ->
                         "记录了 ${mission.teamSeats?.size ?: 0} 名队员，" +
                             "与本任务期望的 ${premise.expectedTeamSize} 名不符。" +
@@ -359,8 +474,24 @@ class AvalonEvidenceAnalyzer(
             }
         }
 
+        // —— 数据质量（NX-01 阶段 D）——
+        // 放在最后：它们是「为什么某些确定性结论没有出现」的可追溯说明，
+        // 不改变正常输入下的任何推论与文案。
+        findings += dataQuality.values
+
         return findings
     }
+
+    /**
+     * 座位名单是否合法：非空、全部落在 `1..playerCount`、且无重复。
+     *
+     * 与 `AvalonReducer` 的 `SEAT_OUT_OF_RANGE` / `DUPLICATE_SEAT` 判定同口径，
+     * 避免「分析器认为合法、reducer 认为未核实」两套标准。
+     */
+    private fun seatsWellFormed(seats: List<SeatId>, playerCount: Int): Boolean =
+        seats.isNotEmpty() &&
+            seats.all { it in 1..playerCount } &&
+            seats.distinct().size == seats.size
 
     override fun analyzeAt(
         match: ReconstructedMatch,
@@ -421,6 +552,12 @@ class AvalonEvidenceAnalyzer(
     private fun a04Explanation(premise: MissionEvidencePremise): String {
         val questNo = premise.questNo
         return when {
+            // 规则矩阵无定义（人数/任务号越界）：门槛本身不可确定，
+            // 因此只说「不能据此清除队员」，绝不说「未达门槛 N」。
+            premise.expectedTeamSize <= 0 ->
+                "第 $questNo 任务的序号或对局人数超出规则范围，失败牌门槛无法按规则确定。" +
+                    "无论门槛是多少，任务成功都不能把队伍成员标记为已证实好人——" +
+                    "坏人可以选择出成功牌来伪装。请先核对任务序号与对局人数。"
             premise.outcomeFailConflict -> {
                 if ((premise.failCount ?: 0) > 0) {
                     "第 $questNo 任务记录为成功，但失败牌数（${premise.failCount}）按门槛 " +
@@ -474,6 +611,15 @@ class AvalonEvidenceAnalyzer(
     }
 
     companion object {
+        /** 规则矩阵支持的人数下界（与 `AvalonPreset.MIN_PLAYERS` 一致）。 */
+        const val MIN_SUPPORTED_PLAYERS: Int = 5
+
+        /** 规则矩阵支持的人数上界（与 `AvalonPreset.MAX_PLAYERS` 一致）。 */
+        const val MAX_SUPPORTED_PLAYERS: Int = 10
+
+        /** 标准局任务总数（与 `AvalonPreset.QUEST_COUNT` 一致）。 */
+        const val QUEST_COUNT: Int = 5
+
         const val RULE_A01: String = "A01_TEAM_SIZE"
         const val RULE_A02: String = "A02_VOTE_NOT_APPROVED"
         const val RULE_A03: String = "A03_MISSION_FAILED_THRESHOLD"
