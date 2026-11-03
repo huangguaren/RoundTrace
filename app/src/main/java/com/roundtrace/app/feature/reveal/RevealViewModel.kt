@@ -79,7 +79,9 @@ class RevealViewModel(
             revealedAt = bundle.revealedAt,
             winner = gameState.outcome?.winner ?: current.winner,
             winReason = gameState.outcome?.reason ?: current.winReason,
-            errorMessage = null
+            errorMessage = null,
+            // 从对局配置构建角色配额
+            roleQuota = bundle.config.roleSlots.associate { it.roleId to it.count }
         )
     }
 
@@ -103,8 +105,19 @@ class RevealViewModel(
 
     private fun updateRow(seat: Int, roleId: RoleId) {
         val current = _state.value
+        val currentRole = current.rows.firstOrNull { it.seat == seat }?.roleId
+
+        // 配额校验：UNKNOWN 不限数量；其他角色满额则拒绝
+        if (roleId != RoleId.UNKNOWN && currentRole != roleId) {
+            if (current.isRoleFull(roleId)) {
+                _state.value = current.copy(errorMessage = "$roleId 已满额")
+                return
+            }
+        }
+
         _state.value = current.copy(
-            rows = current.rows.map { if (it.seat == seat) it.copy(roleId = roleId) else it }
+            rows = current.rows.map { if (it.seat == seat) it.copy(roleId = roleId) else it },
+            errorMessage = null
         )
     }
 

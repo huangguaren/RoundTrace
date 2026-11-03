@@ -99,13 +99,12 @@ fun RevealScreen(
         }
 
         // 逐座位填角色
-        val takenRoles = state.rows.filter { it.roleId != RoleId.UNKNOWN }.map { it.roleId }.toSet()
         items(state.rows.size) { index ->
             val row = state.rows[index]
             RevealRow(
                 seat = row.seat,
                 roleId = row.roleId,
-                takenRoles = takenRoles - row.roleId,
+                state = state,
                 onRoleSelected = { onAction(RevealAction.SetSeatRole(row.seat, it)) }
             )
         }
@@ -207,7 +206,7 @@ fun RevealScreen(
 private fun RevealRow(
     seat: Int,
     roleId: RoleId,
-    takenRoles: Set<RoleId>,
+    state: RevealUiState,
     onRoleSelected: (RoleId) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -254,16 +253,23 @@ private fun RevealRow(
                         }
                     )
                     REVEALABLE_ROLES.forEach { role ->
-                        val taken = role in takenRoles
+                        // 配额逻辑：计算除当前座位外已用数量
+                        val used = state.rows.count { it.roleId == role && it.seat != seat }
+                        val quota = state.roleQuota[role] ?: 0
+                        val isFull = quota > 0 && used >= quota
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = roleDisplayName(role),
-                                    color = if (taken) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                    text = if (quota > 0) {
+                                        "${roleDisplayName(role)} $used/$quota"
+                                    } else {
+                                        roleDisplayName(role)
+                                    },
+                                    color = if (isFull) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                                     else MaterialTheme.colorScheme.onSurface
                                 )
                             },
-                            enabled = !taken,
+                            enabled = !isFull,
                             onClick = {
                                 onRoleSelected(role)
                                 expanded = false

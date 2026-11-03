@@ -32,8 +32,21 @@ data class RevealUiState(
     val assassinSeat: Int? = null,
     val targetSeat: Int? = null,
     val saveStatus: SaveStatus = SaveStatus.SAVED,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** 每种角色的最大数量（来自 config.roleSlots）；UNKNOWN 不限数量 */
+    val roleQuota: Map<RoleId, Int> = emptyMap()
 ) {
+
+    /** 每种角色已分配的数量（不含 UNKNOWN）。 */
+    fun usedCount(role: RoleId): Int =
+        rows.count { it.roleId == role }
+
+    /** 某角色是否已满额。 */
+    fun isRoleFull(role: RoleId): Boolean {
+        if (role == RoleId.UNKNOWN) return false
+        val quota = roleQuota[role] ?: return false
+        return usedCount(role) >= quota
+    }
 
     /** 是否所有座位都已录入角色。 */
     val rolesComplete: Boolean
