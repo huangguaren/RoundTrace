@@ -5,7 +5,8 @@
 > 最新结论见 §13：**433 个 JVM 用例 / 62 个测试类、24 个 API 34 模拟器仪器用例全部通过；`lintDebug` 0 error；`assembleDebug` 成功。** §12 保留阶段 E 的历史基线（356 个用例）。
 > **2026-11-03 追加（P0/P1 收口轮）**：NX-01/02/03/06 落地后 JVM 用例增至 **71 个测试类 / 543 个用例，0 失败**。
 > **2026-11-03 再追加（P2 收口轮）**：无变化编辑保护、影响预览 Compose 断言、规划器代价证据落地后为 **74 个测试类 / 573 个用例，0 失败 / 0 错误 / 0 跳过**；`lintDebug` 0 error（52 warning + 2 information）；`assembleDebug` 通过，Debug APK 20,647,837 B（`versionCode 4 / versionName 0.4.0`，**debug 签名，非正式 release 包**）。
-> 本文档以下章节为各阶段历史基线，**未回填**；当前结论以 `docs/audit/p2-closeout-final.md`（最新）与 `docs/audit/closeout-final.md`（P0/P1）为准。
+> **2026-11-03 再追加（v0.5.0 / F05-01 玩家行为时间线）**：新增只读 `PlayerTraceBuilder`、复盘页玩家时间线视图与三路筛选后为 **77 个测试类 / 613 个用例，0 失败 / 0 错误 / 0 跳过**（较 P2 基线 +3 类 / +40 条）；`lintDebug` **0 error**（56 warning + 2 information，指向 F05-01 文件的问题 0 条）；`assembleDebug` 通过，Debug APK **20,643,373 B**（debug 签名，非正式 release 包）。证据见 `docs/audit/f05-01-final.md`。
+> 本文档以下章节为各阶段历史基线，**未回填**；当前结论以 `docs/audit/f05-01-final.md`（最新）为准，`docs/audit/p2-closeout-final.md`（P2）与 `docs/audit/closeout-final.md`（P0/P1）为历史基线。
 > T43 的 Room 用例已通过 **Robolectric 在 JVM 上真实跑绿**（见 §8）；v3→v4 严格迁移与队长点击路径另在 API 34 模拟器实测通过（见 §13）。
 > 所有结论均为**本机实测**，命令与输出摘要见下；**本轮审计的完整证据见 `docs/audit/`**（baseline / progress / qa-phase1 / qa-phase-d / final-audit / migration-plan）。
 > §4、§7.5、§8.6、§9.7、§10.7、§12.3 中的“无设备/未执行”是各阶段的历史记录；当前仪器测试状态以 §13 为准。

@@ -237,6 +237,7 @@ export JAVA_HOME=/c/Users/HK-info/android-build/jdk
      （QA P2-2）：跨视图的「可见时刻」口径不一致，改它会波及既有用例；
    - 跳转后主视图没有滚动/高亮（QA P2-3）：`SelectPosition(occurredOrder)` 已被实测正确，
      视觉反馈留下一轮；
-   - QA 的 2 个临时探针文件仍在 `app/src/test/java/com/roundtrace/app/qa/`
-     （team-lead 说已删，实际未删）；我把其中 3 条断言改写为新语义保留，
-     是否删除由 team-lead / QA 决定。
+   - ~~QA 的临时探针文件仍在 `app/src/test/java/com/roundtrace/app/qa/`~~
+     **已处理**：4 个 `TempQA*` 文件随 `9b96332` / `e48944d` 误入库，已由 `9e55464` 删除；
+     其中 3 条有价值断言已改写为正式用例，固化在 `PlayerTraceBuilderTest` / `PlayerTraceSectionTest`，
+     覆盖未降低。
