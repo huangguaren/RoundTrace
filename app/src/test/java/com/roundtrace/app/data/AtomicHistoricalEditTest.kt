@@ -368,7 +368,7 @@ class AtomicHistoricalEditTest {
      * 旧实现无条件撤销同提案下游事实（投票 / 决议 / 任务结果），一次误触就毁掉 3 条真实记录。
      */
     @Test
-    fun resubmittingIdenticalProposalContentRetractsNothing() = runBlocking {
+    fun resubmittingIdenticalProposalContentWritesNothing() = runBlocking {
         val match = createMatch()
         appendCycle(match, 1, 1, listOf(1, 2, 3), failCount = 0)
         appendCycle(match, 2, 2, listOf(2, 3, 4, 5), failCount = 0)
@@ -380,20 +380,35 @@ class AtomicHistoricalEditTest {
             current.events.filterIsInstance<TeamProposalResolved>().first { it.questNo == 1 }
         val mission = current.events.filterIsInstance<MissionResolved>().first { it.questNo == 1 }
 
+        val rowsBefore = rows(match).map { "${it.id}|${it.revisionSeq}|${it.retracted}" }.sorted()
+        val updatedBefore = current.summary.updatedAtEpochMs
+
         // 队长、队伍与库内完全一致
         val identical = events.teamProposed(1, 1, proposal.leaderSeat, proposal.teamSeats)
-        val plan = planFor(match, proposal.eventId, identical)
+        val planned = repository.planHistoricalEdit(match, proposal.eventId, identical)
 
-        assertTrue(
-            "D2：内容未修改时撤销清单必须为空，实际=" + plan.retractIds.map { it.raw },
-            plan.retractIds.isEmpty()
+        assertEquals(
+            "P2：内容未修改时必须直接拒绝，不进入预览",
+            EditPlanRejection.NO_BUSINESS_CHANGE,
+            (planned as? EditPlanResult.Rejected)?.reason
         )
-        assertTrue("D2：也不得要求人工复核", plan.manualReviewReasons.isEmpty())
-        assertFalse(plan.isDestructive)
 
-        val result = apply(match, plan)
-        assertTrue("确认本身仍应成功（只是不撤销任何其他记录），实际 $result",
-            result is EditApplyResult.Success)
+        // 即使 UI 手里还攥着一个「确认」，仓储也必须零写入
+        val applied = repository.applyConfirmedEdit(
+            matchId = match,
+            targetEventId = proposal.eventId,
+            replacement = identical,
+            confirmedRetractIds = emptyList(),
+            expectedTokens = emptyList()
+        )
+        assertEquals("P2：确认也必须判 NoChange", EditApplyResult.NoChange, applied)
+
+        assertEquals(
+            "P2：历史表不得新增任何行（不得 revisionSeq + 1）",
+            rowsBefore,
+            rows(match).map { "${it.id}|${it.revisionSeq}|${it.retracted}" }.sorted()
+        )
+        assertEquals("P2：投影不得重算", updatedBefore, bundle(match).summary.updatedAtEpochMs)
 
         val after = rows(match).associateBy { it.eventIdRaw() }
         assertFalse("D2：投票不得被撤销", after.getValue(vote.eventId.raw).retracted)
@@ -478,19 +493,36 @@ class AtomicHistoricalEditTest {
     // ————————————————————————————————————————————————————————
 
     @Test
-    fun missionEditWithSameOutcomeDeletesNothing() = runBlocking {
+    fun missionEditWithSameOutcomeWritesNothing() = runBlocking {
         val match = createMatch()
         appendCycle(match, 1, 1, listOf(1, 2, 3), failCount = 0)
         appendCycle(match, 2, 2, listOf(2, 3, 4, 5), failCount = 0)
 
         val current = bundle(match)
         val mission = current.events.filterIsInstance<MissionResolved>().first { it.questNo == 1 }
-        val plan = planFor(match, mission.eventId, events.missionResolved(1, 3, listOf(1, 2, 3), failCount = 0))
+        val sameOutcome = events.missionResolved(1, 3, listOf(1, 2, 3), failCount = 0)
 
-        assertTrue("A06：结果没变，不得多删任何事件", plan.affected.isEmpty())
-        assertTrue(apply(match, plan) is EditApplyResult.Success)
+        // A06 + P2：结果一字未改 → 直接拒绝，连修订都不发
         assertEquals(
-            "A06：除被修订的那一条外，active 事件数量不变",
+            "A06：结果没变时必须是 NO_BUSINESS_CHANGE",
+            EditPlanRejection.NO_BUSINESS_CHANGE,
+            (repository.planHistoricalEdit(match, mission.eventId, sameOutcome)
+                as? EditPlanResult.Rejected)?.reason
+        )
+
+        assertEquals(
+            "P2：零写入（确认也只会被判 NoChange）",
+            EditApplyResult.NoChange,
+            repository.applyConfirmedEdit(
+                matchId = match,
+                targetEventId = mission.eventId,
+                replacement = sameOutcome,
+                confirmedRetractIds = emptyList(),
+                expectedTokens = emptyList()
+            )
+        )
+        assertEquals(
+            "A06：active 事件集合一条都不能变",
             current.events.size,
             bundle(match).events.size
         )

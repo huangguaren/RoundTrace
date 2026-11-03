@@ -272,6 +272,12 @@ class FakeMatchRepository(
         val bundle = buildBundle(eventsState.value)
         val tokens = tokensOf(bundle)
         val planned = editPlanner.plan(bundle, tokens, targetEventId, replacement)
+        // 与 RoomMatchRepository 对齐：业务字段等价 → NoChange（零写入），不能退化成写入或假失败
+        if (planned is com.roundtrace.app.core.data.edit.EditPlanResult.Rejected &&
+            planned.reason == com.roundtrace.app.core.data.edit.EditPlanRejection.NO_BUSINESS_CHANGE
+        ) {
+            return com.roundtrace.app.core.data.EditApplyResult.NoChange
+        }
         val plan = (planned as? com.roundtrace.app.core.data.edit.EditPlanResult.Ready)?.plan
             ?: return com.roundtrace.app.core.data.EditApplyResult.Failed(
                 com.roundtrace.app.core.data.RepositoryError.INVALID_SUPERSEDE_TARGET

@@ -236,6 +236,16 @@ sealed interface EditApplyResult {
 
     /** 写库失败（事务已整体回滚）。 */
     data class Failed(val error: RepositoryError) : EditApplyResult
+
+    /**
+     * 业务字段与库内现状等价，**没有任何写入**（P2：审计链防空转）。
+     *
+     * 与 [Failed] 的区别：这不是失败，是「本来就不需要写」。典型来源有两个——
+     * 1. 预览阶段：UI 已用 `NO_BUSINESS_CHANGE` 拦下，正常情况下走不到这里；
+     * 2. 确认阶段：预览之后有人把该事件改回了与用户输入相同的值（并发），
+     *    此时事务内重算的计划变成「无变化」→ 拒绝写入，不得生成 `revisionSeq + 1`。
+     */
+    data object NoChange : EditApplyResult
 }
 
 /** 首页筛选（端口层，与 UI 的 `HomeFilter` 解耦）。 */

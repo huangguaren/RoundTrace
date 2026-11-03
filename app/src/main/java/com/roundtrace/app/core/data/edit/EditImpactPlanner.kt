@@ -116,6 +116,16 @@ class EditImpactPlanner(private val reducer: GameReducer) {
             )
         }
 
+        // P2：业务字段等价 → 不开放修订。放在这里（而不是只放在 UI）是为了让**预览与确认
+        // 走同一道闸**：确认时会在新事务里重算计划，因此并发场景下「内容已被别人改回原值」
+        // 同样会被拒，不会出现「UI 提示无修改、仓储照样写一跳」的 TOCTOU。
+        if (businessEquivalent(target, replacement)) {
+            return EditPlanResult.Rejected(
+                EditPlanRejection.NO_BUSINESS_CHANGE,
+                "内容未修改（${businessFieldSummary(target)}），不会生成新的修订版本"
+            )
+        }
+
         val findings = try {
             when (target) {
                 is TeamProposed -> proposalFindings(events, target, replacement)
@@ -156,6 +166,72 @@ class EditImpactPlanner(private val reducer: GameReducer) {
                 manualReviewReasons = findings.manualReviewReasons.distinct()
             )
         )
+    }
+
+    // ————————————————————————————————————————————————————————
+    // 业务等价比较（P2：无变化编辑不得产生新修订）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 两份事件在**业务字段**上是否等价。
+     *
+     * 只比较「玩家记错了可以改的东西」：
+     * - [TeamProposed]：`leaderSeat` + `teamSeats`
+     * - [TeamVoteRecorded]：逐人票、汇总票、未知票、投票时人数
+     * - [MissionResolved]：失败牌数、观察结果、队伍、应有队伍人数
+     *
+     * 刻意**不比较** `eventId`、`recordedAt`、`occurredOrder`、`supersedesId`、`visibility`、
+     * `retracted` —— 它们是「这条记录是怎么存进来的」的元数据，不是玩家要维护的事实。
+     * `verified` 同样排除：它是 reducer 回填的可复核性标记，随上下文变化，不构成用户修改。
+     *
+     * 两个容易写错的地方：
+     * 1. **顺序不代表变化**：`teamSeats` 是集合语义，同一批座位换了录入顺序仍是同一支队伍，
+     *    因此比较前先排序（保留重复元素的重数，非法数据也能稳定比较）。
+     * 2. **`null` 与 `0` 不等价**：`failCount = null` 是「没记」，`0` 是「确定没出失败牌」；
+     *    `approveCount = null` 同理。`Int?` 直接用 `==` 比较即可保住这个区分，不要 `?: 0`。
+     */
+    private fun businessEquivalent(target: MatchEvent, replacement: MatchEvent): Boolean =
+        when (target) {
+            is TeamProposed -> {
+                val after = replacement as? TeamProposed ?: return false
+                target.leaderSeat == after.leaderSeat &&
+                    target.teamSeats.sorted() == after.teamSeats.sorted()
+            }
+
+            is TeamVoteRecorded -> {
+                val after = replacement as? TeamVoteRecorded ?: return false
+                target.votesBySeat == after.votesBySeat &&
+                    target.approveCount == after.approveCount &&
+                    target.rejectCount == after.rejectCount &&
+                    target.unknownVoteCount == after.unknownVoteCount &&
+                    target.playerCountAtVote == after.playerCountAtVote
+            }
+
+            is MissionResolved -> {
+                val after = replacement as? MissionResolved ?: return false
+                target.failCount == after.failCount &&
+                    target.observedOutcome == after.observedOutcome &&
+                    target.teamSizeExpected == after.teamSizeExpected &&
+                    sameSeats(target.teamSeats, after.teamSeats)
+            }
+
+            // 不可编辑类型在 plan() 上游已拒；这里返回 false（视作有变化）不会放行任何写入，
+            // 只是把「是否无变化」的判定留给真正的白名单闸门，避免此处成为绕过点。
+            else -> false
+        }
+
+    /** 座位清单等价：`null`（完全未记录）与空列表不是一回事。 */
+    private fun sameSeats(before: List<Int>?, after: List<Int>?): Boolean = when {
+        before == null || after == null -> before == null && after == null
+        else -> before.sorted() == after.sorted()
+    }
+
+    /** 「内容未修改」提示里说明比对了哪些字段，避免用户以为改的东西被吞了。 */
+    private fun businessFieldSummary(event: MatchEvent): String = when (event) {
+        is TeamProposed -> "队长与队伍均未改变"
+        is TeamVoteRecorded -> "票数与投票时人数均未改变"
+        is MissionResolved -> "失败牌数、结果与队伍均未改变"
+        else -> "业务字段均未改变"
     }
 
     // ————————————————————————————————————————————————————————
@@ -647,6 +723,18 @@ enum class EditPlanRejection {
 
     /** 替换事件的 id 与本局已有事件重复。 */
     DUPLICATE_EVENT_ID,
+
+    /**
+     * 业务字段一字未改（P2：审计链防空转）。
+     *
+     * 「打开编辑 → 什么都不改 → 直接保存」在 UI 上可达：`openEdit` 用原值预填，
+     * 若不做业务等价比较，仓储会照常走 `reviseWithSlot` —— 旧版本被 retract、`revisionSeq + 1`、
+     * `updatedAt` 变化，历史链平白多出一跳内容完全相同的新版本。
+     *
+     * 与 [TARGET_NOT_FOUND] 等「错误」不同，这是**正常的用户操作**：UI 应提示「内容未修改」
+     * 并保持零写入，而不是报错。
+     */
+    NO_BUSINESS_CHANGE,
 
     /** 读取快照/计算过程中出现异常（仓储侧兜底，**不会**被当成「无影响」）。 */
     PLAN_FAILED

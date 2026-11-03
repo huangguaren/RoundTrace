@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.roundtrace.app.core.data.EditApplyResult
 import com.roundtrace.app.core.data.MatchBundle
 import com.roundtrace.app.core.data.MatchRepository
+import com.roundtrace.app.core.data.edit.EditPlanRejection
 import com.roundtrace.app.core.data.edit.EditPlanResult
 import com.roundtrace.app.core.model.EventFactory
 import com.roundtrace.app.core.model.EventId
@@ -651,7 +652,13 @@ class RecordViewModel(
 
                     is EditPlanResult.Rejected -> {
                         saveStatusFlow.value = SaveStatus.FAILED
-                        commitResultFlow.value = RecordCommitResult.Failed(planned.reason.name)
+                        commitResultFlow.value = when (planned.reason) {
+                            // 无变化不是错误：不弹预览、不写库，只中性提示「内容未修改」
+                            EditPlanRejection.NO_BUSINESS_CHANGE ->
+                                RecordCommitResult.Failed(EditFailureReason.NO_CHANGES)
+
+                            else -> RecordCommitResult.Failed(planned.reason.name)
+                        }
                     }
 
                     null -> {
@@ -718,6 +725,15 @@ class RecordViewModel(
                     is EditApplyResult.Failed -> {
                         saveStatusFlow.value = SaveStatus.FAILED
                         commitResultFlow.value = RecordCommitResult.Failed(applied.error.name)
+                    }
+
+                    // 确认时内容已经等价（预览后被别人改回原值）：关掉无意义的预览，零写入
+                    is EditApplyResult.NoChange -> {
+                        pendingEditFlow.value = null
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(
+                            EditFailureReason.NO_CHANGES
+                        )
                     }
 
                     null -> {

@@ -301,6 +301,14 @@ object EditFailureReason {
 
     /** 写库失败（事务已整体回滚）。 */
     const val WRITE_FAILED: String = "WRITE_FAILED"
+
+    /**
+     * 业务字段一字未改（P2）：**没有写入，也不需要写入**。
+     *
+     * 与上面几个不同，这不是失败路径的提示，而是「这次保存什么都不用做」。
+     * UI 用中性文案告知，并保留编辑态让用户继续改，不做任何「重试」引导。
+     */
+    const val NO_CHANGES: String = "NO_CHANGES"
 }
 
 data class RecordUiState(

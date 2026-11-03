@@ -263,13 +263,15 @@ class EditImpactPlannerTest {
     }
 
     /**
-     * D2 回归（QA 对抗性验收发现）：**「打开编辑 → 直接保存」撤销了 3 条真实记录**。
+     * D2 回归（QA 对抗性验收发现）+ P2 收紧：**「打开编辑 → 直接保存」不得产生任何东西**。
      *
      * `openEdit` 用原值预填、`canSubmit` 又只校验人数，因此「什么都没改就保存」是现场最容易触发的路径。
-     * 旧实现的 `proposalFindings` 从不比较新旧提案内容，无条件撤销同提案下游事实。
+     * - D2 修掉了「无条件撤销同提案下游事实」；
+     * - P2 进一步要求**连修订都不许发**：内容等价时直接 `NO_BUSINESS_CHANGE`，
+     *   否则仓储仍会写一条内容相同的新版本（`revisionSeq + 1`），审计链空转。
      */
     @Test
-    fun savingIdenticalProposalContentHasNoImpact() {
+    fun savingIdenticalProposalContentIsRejectedAsNoChange() {
         val builder = MatchBuilder.eightPlayerMerlinMordred()
             .questCycle(1, 1, listOf(1, 2, 3), failCount = 0)
             .questCycle(2, 2, listOf(2, 3, 4, 5), failCount = 0)
@@ -277,16 +279,11 @@ class EditImpactPlannerTest {
 
         val target = bundle.event<TeamProposed> { it.questNo == 1 }
         // 队长、队伍一字未改（= 打开编辑后直接点保存）
-        val plan = plan(bundle, target.eventId, target.replaced(target.teamSeats))
-
-        assertTrue(
-            "D2：内容未修改时不得产生任何影响，实际受影响=" + plan.affected.map { it.eventId.raw },
-            plan.affected.isEmpty()
+        assertEquals(
+            "内容未修改时必须直接拒绝，不进入预览",
+            EditPlanRejection.NO_BUSINESS_CHANGE,
+            rejection(bundle, target.eventId, target.replaced(target.teamSeats))
         )
-        assertTrue("D2：撤销清单必须为空", plan.retractIds.isEmpty())
-        assertTrue("D2：也不得提出人工复核", plan.manualReviewReasons.isEmpty())
-        assertFalse(plan.isDestructive)
-        assertEquals(0, plan.retractCount)
     }
 
     /** D2 边界：只有队长变了也算内容变化 —— 提案记录就是「谁提的 + 提了谁」。 */
@@ -391,17 +388,18 @@ class EditImpactPlannerTest {
     // ————————————————————————————————————————————————————————
 
     @Test
-    fun missionEditWithIdenticalOutcomeHasNoImpact() {
+    fun missionEditWithIdenticalOutcomeIsRejectedAsNoChange() {
         val builder = MatchBuilder.eightPlayerMerlinMordred()
             .questCycle(1, 1, listOf(1, 2, 3), failCount = 0)
             .questCycle(2, 2, listOf(2, 3, 4, 5), failCount = 0)
         val bundle = bundleOf(builder)
 
         val mission = bundle.event<MissionResolved> { it.questNo == 1 }
-        val plan = plan(bundle, mission.eventId, mission.replaced(failCount = 0))
-
-        assertTrue("结果没变时不得多删任何事件", plan.affected.isEmpty())
-        assertFalse(plan.isDestructive)
+        assertEquals(
+            "结果没变时不得产生新修订",
+            EditPlanRejection.NO_BUSINESS_CHANGE,
+            rejection(bundle, mission.eventId, mission.replaced(failCount = 0))
+        )
     }
 
     @Test

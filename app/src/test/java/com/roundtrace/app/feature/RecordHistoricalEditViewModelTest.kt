@@ -456,4 +456,77 @@ class RecordHistoricalEditViewModelTest {
         assertEquals("D3：仓库返回 error 必须如实标 FAILED", SaveStatus.FAILED, state.saveStatus)
         assertEquals("D3：失败时历史不得被改动", before, repository.bundle()!!.events)
     }
+
+    // ————————————————————————————————————————————————————————
+    // P2：无变化编辑 → 不弹预览、不调确认接口、零写入
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 「打开编辑 → 什么都不改 → 保存」必须停在提示层。
+     *
+     * 旧行为：预览照出（「无需重置其他记录」），用户一点确认就写一条内容相同的新版本。
+     * 新契约：[EditFailureReason.NO_CHANGES] + **不产出 `pendingEdit`** + **不调用 `applyConfirmedEdit`**。
+     */
+    @Test
+    fun savingUnchangedHistoricalEditReportsNoChangesWithoutPreviewOrWrite() = runTest {
+        val repository = repositoryWithTwoQuests()
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        val before = repository.bundle()!!.events
+        viewModel.onAction(RecordAction.OpenEdit(firstQuestProposalId(repository)))
+        advanceUntilIdle()
+        // 一个字段都不动，直接保存
+        viewModel.onAction(RecordAction.ConfirmProposal)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        val failure = state.commitResult
+        assertTrue("P2：必须报告失败/无变化，实际 $failure", failure is RecordCommitResult.Failed)
+        assertEquals(
+            "P2：原因必须是 NO_CHANGES（UI 据此提示「内容未修改」）",
+            EditFailureReason.NO_CHANGES,
+            (failure as RecordCommitResult.Failed).reason
+        )
+        assertNull("P2：不得产出影响预览", state.pendingEdit)
+        assertEquals("P2：绝不能调用确认接口", 0, repository.applyCalls)
+        assertTrue("P2：至少要算过一次影响计划", repository.planCalls > 0)
+        assertEquals("P2：历史必须一行未改", before, repository.bundle()!!.events)
+        assertNotNull("P2：编辑会话要保留，用户还能接着改", state.editSession)
+    }
+
+    /**
+     * 反向保护：提示「内容未修改」之后**必须能继续编辑**。
+     *
+     * 如果无变化闸门把编辑会话一起清掉，用户会以为自己的修改被吞了 —— 那是比多次修订更糟的体验。
+     */
+    @Test
+    fun afterNoChangesHintUserCanStillEditAndPreview() = runTest {
+        val repository = repositoryWithTwoQuests()
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        viewModel.onAction(RecordAction.OpenEdit(firstQuestProposalId(repository)))
+        advanceUntilIdle()
+        viewModel.onAction(RecordAction.ConfirmProposal)
+        advanceUntilIdle()
+        assertEquals(
+            EditFailureReason.NO_CHANGES,
+            (viewModel.uiState.value.commitResult as RecordCommitResult.Failed).reason
+        )
+
+        // 真正改一名队员再保存 → 这次应当出预览
+        viewModel.onAction(RecordAction.ToggleTeamSeat(3))
+        viewModel.onAction(RecordAction.ToggleTeamSeat(5))
+        viewModel.onAction(RecordAction.ConfirmProposal)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertNotNull("改了内容就必须出预览", state.pendingEdit)
+        assertEquals("确认前仍然零写入", 0, repository.applyCalls)
+        assertTrue(
+            "本次预览应说明会撤销哪些记录",
+            (state.pendingEdit?.plan?.affected?.size ?: 0) > 0
+        )
+    }
 }

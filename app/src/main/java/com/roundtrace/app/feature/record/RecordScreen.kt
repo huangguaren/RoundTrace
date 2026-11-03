@@ -85,6 +85,7 @@ fun RecordScreen(
     val commitFailedMessage = stringResource(R.string.record_commit_failed)
     val stalePreviewMessage = stringResource(R.string.record_edit_stale)
     val manualReviewMessage = stringResource(R.string.record_edit_conflict)
+    val noChangesMessage = stringResource(R.string.record_edit_no_changes)
     LaunchedEffect(state.commitResult) {
         when (val result = state.commitResult) {
             is RecordCommitResult.Succeeded -> {
@@ -97,6 +98,7 @@ fun RecordScreen(
                 val message = when (result.reason) {
                     EditFailureReason.STALE_PREVIEW -> stalePreviewMessage
                     EditFailureReason.MANUAL_REVIEW_REQUIRED -> manualReviewMessage
+                    EditFailureReason.NO_CHANGES -> noChangesMessage
                     else -> commitFailedMessage
                 }
                 snackbarHostState.showSnackbar(message)

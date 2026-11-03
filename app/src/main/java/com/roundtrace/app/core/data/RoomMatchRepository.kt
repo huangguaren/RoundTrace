@@ -482,6 +482,10 @@ class RoomMatchRepository(
                             DB_LOG_TAG,
                             "确认历史修改被拒绝：${planned.reason.name} ${planned.detail}"
                         )
+                        // 业务字段等价不是错误：零写入，让 UI 提示「内容未修改」而不是「保存失败」
+                        if (planned.reason == EditPlanRejection.NO_BUSINESS_CHANGE) {
+                            return@withTransaction EditApplyResult.NoChange
+                        }
                         return@withTransaction EditApplyResult.Failed(
                             RepositoryError.INVALID_SUPERSEDE_TARGET
                         )
