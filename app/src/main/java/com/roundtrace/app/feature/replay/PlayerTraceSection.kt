@@ -61,7 +61,8 @@ internal fun PlayerTraceSection(
     onSelectQuest: (Int?) -> Unit,
     onSelectCategory: (PlayerTraceCategory?) -> Unit,
     onSelectItem: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    seatLabels: Map<Int, String?> = emptyMap()
 ) {
     Column(modifier = modifier.fillMaxSize()) {
         SectionLabel(R.string.replay_trace_seat_section)
@@ -71,8 +72,11 @@ internal fun PlayerTraceSection(
         ) {
             items((1..playerCount).toList()) { seat ->
                 val description = stringResource(R.string.replay_trace_seat_desc, seat)
+                // 有昵称显示昵称，否则显示座位号
+                val label = seatLabels[seat]?.takeIf { it.isNotBlank() }
+                    ?: stringResource(R.string.seat_number, seat)
                 TraceChip(
-                    label = stringResource(R.string.seat_number, seat),
+                    label = label,
                     selected = selectedSeat == seat,
                     description = description,
                     onClick = { onSelectSeat(seat) }

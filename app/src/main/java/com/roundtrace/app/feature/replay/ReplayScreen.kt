@@ -122,7 +122,8 @@ fun ReplayScreen(
                                 // 跳回主视图，否则「跳转」的结果在时间线里看不见
                                 showPlayerTrace = false
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            seatLabels = state.seatLabels
                         )
                     }
                 } else {

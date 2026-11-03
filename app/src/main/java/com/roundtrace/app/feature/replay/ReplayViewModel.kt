@@ -237,7 +237,9 @@ class ReplayViewModel(
             },
             canOpenGodView = probe.canOpenGodView,
             godViewBlocked = blocked,
-            errorMessage = null
+            errorMessage = null,
+            // 座位号 → 昵称映射（PlayerTraceSection 用）
+            seatLabels = bundle.participants.associate { it.seat to it.displayName }
         )
     }
 

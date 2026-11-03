@@ -37,7 +37,9 @@ data class ReplayUiState(
     val canOpenGodView: Boolean = false,
     /** 用户点了「上帝」但被拒绝 —— UI 弹提示后应清除 */
     val godViewBlocked: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** 座位号 → 昵称映射（PlayerTraceSection 用） */
+    val seatLabels: Map<Int, String?> = emptyMap()
 ) {
 
     /** 是否没有任何可用分析（T58⑤ 空态）。 */
