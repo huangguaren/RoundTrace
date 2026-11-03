@@ -198,7 +198,29 @@
 
 - Debug APK：`app/build/outputs/apk/debug/app-debug.apk`，20,647,837 B，`versionCode 4 / versionName 0.4.0`。
   **这是 debug 签名包，不是正式 release 包**；通过功能验收 ≠ 已上架。
-- 远端 Actions 与 `test-report` XML 复核结果见提交后的回填（本文件 §7 会在推送并核对后补 URL）。
+### 7.1 远端 Actions（针对本轮 HEAD `cdd1406`，非沿用旧绿灯）
+
+| 项 | 值 |
+|---|---|
+| Run ID | 41588244638（attempt 1） |
+| URL | https://github.com/huangguaren/RoundTrace/actions/runs/41588244638 |
+| HEAD | `cdd1406f543e0b0c5cd071556ecd48e6c451ddfa` |
+| 总判定 | **success**（16 个 step 全部 success） |
+| 步骤 | checkout / setup-java / Setup Gradle / chmod / Remove CN mirrors / **Run unit tests** / **Run lint** / **Build debug APK** / Upload test report / Upload APK 等 |
+| Artifact `test-report` | id 13208614374，80,879 B，未过期 |
+| Artifact `app-debug` | id 13209376743，19,637,098 B（zip 体积），未过期 |
+
+从 `test-report` artifact 内解出 74 个 `TEST-*.xml`，用 `xml.etree.ElementTree` 汇总：
+
+**74 个测试类 / 573 条用例 / 失败 0 / 错误 0 / 跳过 0** —— 与本地完全一致。
+（本地 `app/build/test-results/testDebugUnitTest` 同口径汇总也是 74 / 573 / 0 / 0 / 0。）
+
+- 最新报告 artifact：https://github.com/huangguaren/RoundTrace/actions/runs/41588244638/artifacts/13208614374
+- 最新 Debug APK artifact：https://github.com/huangguaren/RoundTrace/actions/runs/41588244638/artifacts/13209376743
+
+> 说明：`d94da57` 及更早的运行**不作为**本轮证据。此外本轮的最后若干提交可能只改 `docs/`，
+> 代码树与 `cdd1406` 完全一致；若 HEAD 已前进，请以「同一代码、重复验证」看待其运行结果，
+> 判定仍以此处记录的代码提交为准。
 
 ## 8. 剩余风险与已知限制
 
