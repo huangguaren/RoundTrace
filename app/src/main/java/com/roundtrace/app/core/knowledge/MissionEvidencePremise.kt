@@ -45,7 +45,14 @@ data class MissionEvidencePremise(
     /** 失败牌数与记录结果是否冲突（两者都有且推导结果 ≠ 观察结果）。 */
     val outcomeFailConflict: Boolean,
     /** 由失败牌数推导的任务结果；牌数未知/超界时为 null。 */
-    val derivedOutcome: MissionOutcome?
+    val derivedOutcome: MissionOutcome?,
+    /**
+     * 校验失败牌数合法性时使用的队伍规模（去重后的记录人数，缺失时用事件的期望人数）。
+     *
+     * 对外暴露是为了让分析器能在文案里说清「99 张失败牌 > 队伍 5 人」这类数据质量问题，
+     * 而不必自己再算一遍、落成两份口径。
+     */
+    val teamSizeForCheck: Int
 )
 
 /**
@@ -98,6 +105,7 @@ fun missionEvidencePremise(
         expectedTeamSize = expectedTeamSize,
         seatsMalformed = seatsMalformed,
         outcomeFailConflict = outcomeFailConflict,
-        derivedOutcome = derivedOutcome
+        derivedOutcome = derivedOutcome,
+        teamSizeForCheck = teamSizeForCheck
     )
 }
