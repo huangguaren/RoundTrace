@@ -631,7 +631,7 @@ private fun IssueHints(state: RecordUiState) {
  * 本组件是纯展示 + 回调：所有判定都来自 [PendingEdit]（由 ViewModel 用领域计划填充）。
  */
 @Composable
-private fun EditImpactPreviewDialog(
+internal fun EditImpactPreviewDialog(
     pending: PendingEdit,
     isSaving: Boolean,
     onConfirm: () -> Unit,
