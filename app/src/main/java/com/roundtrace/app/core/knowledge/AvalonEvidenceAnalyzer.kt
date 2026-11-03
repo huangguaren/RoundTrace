@@ -123,16 +123,19 @@ class AvalonEvidenceAnalyzer(
                 // NX-01-D：任务号不在 1..5（或人数非法）时规则矩阵没有定义，
                 // 「队伍应为 N 人」这类数量结论必须抑制，只留数据质量提示。
                 if (expected <= 0) {
-                    noteDataQuality(
-                        key = "quest-$questNo",
-                        label = "第 $questNo 个任务号不在规则范围（1–$QUEST_COUNT）",
-                        explanation = "阿瓦隆标准局只有 $QUEST_COUNT 个任务。任务号 $questNo " +
-                            "（或对局人数 $playerCount）超出规则矩阵，" +
-                            "该任务的队伍人数、失败牌门槛与「队伍内至少几名坏人」都无法按规则确定，" +
-                            "相关确定性结论已抑制；请核对任务序号后重新查看。",
-                        questNo = questNo,
-                        sourceEventIds = listOf(proposal.eventId)
-                    )
+                    // 人数非法时上面已经有了全局的「人数越界」提示，这里只补任务号越界
+                    if (questNo !in 1..QUEST_COUNT) {
+                        noteDataQuality(
+                            key = "quest-$questNo",
+                            label = "第 $questNo 个任务号不在规则范围（1–$QUEST_COUNT）",
+                            explanation = "阿瓦隆标准局只有 $QUEST_COUNT 个任务，记录里出现了第 " +
+                                "$questNo 个任务。该任务的队伍人数、失败牌门槛与" +
+                                "「队伍内至少几名坏人」都无法按规则矩阵确定，" +
+                                "相关确定性结论已抑制；请核对任务序号后重新查看。",
+                            questNo = questNo,
+                            sourceEventIds = listOf(proposal.eventId)
+                        )
+                    }
                 }
 
                 // A01：队伍人数应为 N 人（仅在规则矩阵有定义时）
@@ -255,13 +258,13 @@ class AvalonEvidenceAnalyzer(
             // 失败牌数超出 0..队伍规模 → 无法推导结果，也不能声称「至少 f 名坏人」
             val failCountInRange = premise.failCount != null &&
                 premise.failCount in 0..premise.teamSizeForCheck
-            if (!ruleMatrixValid) {
+            if (!ruleMatrixValid && questNo !in 1..QUEST_COUNT) {
                 noteDataQuality(
                     key = "quest-$questNo",
                     label = "第 $questNo 个任务号不在规则范围（1–$QUEST_COUNT）",
-                    explanation = "阿瓦隆标准局只有 $QUEST_COUNT 个任务。任务号 $questNo " +
-                        "（或对局人数 $playerCount）超出规则矩阵，" +
-                        "该任务的队伍人数、失败牌门槛与「队伍内至少几名坏人」都无法按规则确定，" +
+                    explanation = "阿瓦隆标准局只有 $QUEST_COUNT 个任务，记录里出现了第 " +
+                        "$questNo 个任务。该任务的队伍人数、失败牌门槛与" +
+                        "「队伍内至少几名坏人」都无法按规则矩阵确定，" +
                         "相关确定性结论已抑制；请核对任务序号后重新查看。",
                     questNo = questNo,
                     sourceEventIds = listOf(mission.eventId)
