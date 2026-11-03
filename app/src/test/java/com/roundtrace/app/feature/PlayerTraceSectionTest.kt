@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import com.roundtrace.app.core.model.ClaimType
 import com.roundtrace.app.core.model.EventId
+import com.roundtrace.app.core.model.EventVisibility
 import com.roundtrace.app.core.model.GamePosition
 import com.roundtrace.app.core.model.MatchEvent
 import com.roundtrace.app.core.model.MissionOutcome
@@ -211,6 +212,55 @@ class PlayerTraceSectionTest {
 
         // 夹具里言论是第 7 个事件（2 个任务 × 3 条 + 1 条发言）
         assertEquals(7, clickedOrder)
+    }
+
+    /**
+     * 私有来源必须显式标注：同一条记录，来源事件标了 `PRIVATE_OBSERVER` 就要渲染
+     * 「来自私有记录 · 仅本人可见」，否则用户会把只有自己记得的东西当成公开历史。
+     */
+    @Test
+    fun privateSourceTagIsRenderedOnlyForPrivateItems() {
+        fun item(
+            title: String,
+            visibility: EventVisibility,
+            order: Int
+        ) = PlayerTraceItem(
+            sourceEventId = EventId("private-source-$order"),
+            occurredOrder = order,
+            questNo = 1,
+            category = PlayerTraceCategory.SPEAKER,
+            relationship = PlayerTraceRelationship.SPOKE,
+            title = title,
+            detail = "第 1 任务 · 跳身份 · 声称内容不等于身份事实",
+            factLevel = PlayerTraceFactLevel.RECORDED,
+            sourceVisibility = visibility
+        )
+
+        compose.setContent {
+            RoundTraceTheme {
+                PlayerTraceSection(
+                    playerCount = 8,
+                    selectedSeat = 3,
+                    questFilter = null,
+                    categoryFilter = null,
+                    items = listOf(
+                        item("3 号声称自己是派西维尔", EventVisibility.PRIVATE_OBSERVER, 1),
+                        item("3 号发言：怀疑", EventVisibility.PUBLIC, 2)
+                    ),
+                    onSelectSeat = {},
+                    onSelectQuest = {},
+                    onSelectCategory = {},
+                    onSelectItem = {}
+                )
+            }
+        }
+
+        // 私有标记必须渲染（`onNodeWithText` 在有多于一个匹配时会失败，
+        // 因此下面这条同时证明「只有私有那一张挂了标记」）
+        compose.onNodeWithText("来自私有记录 · 仅本人可见").assertIsDisplayed()
+        // 两张卡片本身都要渲染（来源不同，标题刻意不同以便区分）
+        compose.onNodeWithText("3 号声称自己是派西维尔").assertIsDisplayed()
+        compose.onNodeWithText("3 号发言：怀疑").assertIsDisplayed()
     }
 
     /**

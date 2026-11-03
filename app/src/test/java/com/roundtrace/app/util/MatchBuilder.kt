@@ -173,20 +173,28 @@ class MatchBuilder private constructor(
         )
     }
 
-    /** 公开发言。 */
+    /**
+     * 发言 / 声称。
+     *
+     * @param visibility 默认 [EventVisibility.PUBLIC]；传 `PRIVATE_OBSERVER` 可构造**私有声称**
+     *        （归属发言者本人，见 `VisibleEventPolicy.ownerSeatOf`）。
+     *        这个参数存在的唯一理由是：原先硬编码 `PUBLIC`，导致「私有声称」这条可见性路径
+     *        在任何夹具里都造不出来 —— 零覆盖的缺陷正是这么来的。
+     */
     fun playerClaimed(
         speakerSeat: Int,
         claimType: ClaimType,
         questNo: Int? = null,
         claimedRole: RoleId? = null,
         targetSeats: List<Int> = emptyList(),
-        text: String? = null
+        text: String? = null,
+        visibility: EventVisibility = EventVisibility.PUBLIC
     ): MatchBuilder = apply {
         events += PlayerClaimed(
             eventId = nextEventId(),
             occurredOrder = nextOrder(),
             recordedAt = nextRecordedAt(),
-            visibility = EventVisibility.PUBLIC,
+            visibility = visibility,
             questNo = questNo,
             speakerSeat = speakerSeat,
             claimType = claimType,

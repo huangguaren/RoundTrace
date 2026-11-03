@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.roundtrace.app.R
+import com.roundtrace.app.core.model.EventVisibility
 import com.roundtrace.app.core.replay.PlayerTraceCategory
 import com.roundtrace.app.core.replay.PlayerTraceFactLevel
 import com.roundtrace.app.core.replay.PlayerTraceItem
@@ -202,9 +203,10 @@ private fun TraceChip(
 /**
  * 单条记录卡片。
  *
- * 三行固定结构：类别 + 任务 + 事实等级 → 摘要 → 明细。
+ * 三行固定结构：类别 + 任务 + 事实等级 + 私有来源标记 → 摘要 → 明细。
  * 「事实等级」只在非 `RECORDED` 时出现，避免每张卡片都挂一个「记录事实」的噪声标签；
  * 一旦是「记录为未知」，必须显式写出来，不能让用户以为是明确事实。
+ * 「来自私有记录 · 仅本人可见」同理：只在来源事件是 `PRIVATE_OBSERVER` 时出现。
  */
 @Composable
 private fun PlayerTraceCard(
@@ -246,6 +248,15 @@ private fun PlayerTraceCard(
                         text = stringResource(R.string.replay_trace_fact_unknown),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                // 私有来源必须显式标注：它只在本人视角下合法可见，
+                // 不带标记会让用户把「只有我记得的东西」当成公开历史。
+                if (item.sourceVisibility == EventVisibility.PRIVATE_OBSERVER) {
+                    Text(
+                        text = stringResource(R.string.replay_trace_private_source),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary
                     )
                 }
             }

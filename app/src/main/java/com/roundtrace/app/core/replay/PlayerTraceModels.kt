@@ -1,6 +1,7 @@
 package com.roundtrace.app.core.replay
 
 import com.roundtrace.app.core.model.EventId
+import com.roundtrace.app.core.model.EventVisibility
 
 /**
  * 玩家行为时间线的展示模型（F05-01）。
@@ -19,6 +20,11 @@ import com.roundtrace.app.core.model.EventId
  * @param title 一行可扫读的摘要
  * @param detail 明细（含「不得推断」这类边界声明）
  * @param factLevel 事实等级，见 [PlayerTraceFactLevel]
+ * @param sourceVisibility **来源事件本身的可见性**，默认 `PUBLIC`。
+ *        它必须一路带到 UI：私有来源（`PRIVATE_OBSERVER`）的条目即使在本人视角下合法可见，
+ *        也必须显式标注「来自私有记录 · 仅本人可见」——否则用户会把「只有我记得的东西」
+ *        当成公开历史复述。这是 `VisibleEventPolicy` 那句「宁可少显示，也不要把私有信息
+ *        当成公开历史展示」在展示层的延续。
  */
 data class PlayerTraceItem(
     val sourceEventId: EventId,
@@ -28,7 +34,8 @@ data class PlayerTraceItem(
     val relationship: PlayerTraceRelationship,
     val title: String,
     val detail: String,
-    val factLevel: PlayerTraceFactLevel
+    val factLevel: PlayerTraceFactLevel,
+    val sourceVisibility: EventVisibility = EventVisibility.PUBLIC
 )
 
 /**

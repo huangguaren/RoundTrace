@@ -1,5 +1,6 @@
 package com.roundtrace.app.core.replay
 
+import com.roundtrace.app.core.model.EventVisibility
 import com.roundtrace.app.core.model.MatchEvent
 import com.roundtrace.app.core.model.MissionResolved
 import com.roundtrace.app.core.model.Perspective
@@ -28,10 +29,17 @@ import com.roundtrace.app.core.model.TeamVoteRecorded
  * ## 只读
  * 本对象是纯函数：不写库、不改事件、不持有状态。`match_events` 的写入路径只属于记录页。
  *
+ * ## 私有信息在本类的两条硬规则
+ * 1. **归属优先**：私有事件只对它的主人产出条目（`PrivateNoteAdded` 看 `observerSeat`，
+ *    `PlayerClaimed` 看 `speakerSeat`），绝不从「被提及」这条侧门进到别人的轨迹里。
+ * 2. **标记不丢**：条目的 [PlayerTraceItem.sourceVisibility] 原样带上来源事件的可见性，
+ *    由 UI 负责渲染「来自私有记录 · 仅本人可见」。
+ *
  * ## 明确不做的事
  * - 不从失败牌推断「谁出的失败牌」；
  * - 不从队长/上车记录推断阵营；
  * - 不把汇总票分摊到个人；
+ * - 队长自提名时不重复发「被提名上车」（同一动作不发两条）；
  * - 不产出 [PlayerTraceFactLevel.INFERRED]（宁可少显示，也不给推测）。
  */
 object PlayerTraceBuilder {
@@ -109,19 +117,23 @@ object PlayerTraceBuilder {
 
         is TeamProposed -> buildList {
             val team = seatList(event.teamSeats)
-            if (event.leaderSeat == playerSeat) {
-                add(
+            val isLeader = event.leaderSeat == playerSeat
+            val onTeam = playerSeat in event.teamSeats
+            when {
+                // 队长自己也上车时只出 1 条：同一事件既发「提出提案」又发「被提名」
+                // 会在列表里读成两件事，而它其实是同一个动作的两个侧面。
+                isLeader -> add(
                     item(
                         event = event,
                         category = PlayerTraceCategory.LEADER,
                         relationship = PlayerTraceRelationship.PROPOSED_TEAM,
                         title = "作为队长提出${proposalLabel(event.questNo, event.proposalNo)}",
-                        detail = "提案队伍：$team · 仅为队长记录，不推断阵营"
+                        detail = "提案队伍：$team · 仅为队长记录，不推断阵营" +
+                            if (onTeam) " · 本人也在提案队伍中" else ""
                     )
                 )
-            }
-            if (playerSeat in event.teamSeats) {
-                add(
+
+                onTeam -> add(
                     item(
                         event = event,
                         category = PlayerTraceCategory.NOMINATED,
@@ -178,6 +190,11 @@ object PlayerTraceBuilder {
         }
 
         is PlayerClaimed -> buildList {
+            // 私有声称（PRIVATE_OBSERVER）只在**发言者本人**的轨迹里出现。
+            // 判据是记录者给的可见性标记，不是「这句话有没有发生过」：
+            // 标成私有就是不想让它被当成公开历史，因此它也不得从「被提及」这条侧门
+            // 进到别人的参与记录里（与 `PrivateNoteAdded` 的保守口径一致）。
+            val isPrivateClaim = event.visibility == EventVisibility.PRIVATE_OBSERVER
             if (event.speakerSeat == playerSeat) {
                 add(
                     item(
@@ -188,7 +205,7 @@ object PlayerTraceBuilder {
                         detail = claimDetail(event)
                     )
                 )
-            } else if (playerSeat in event.targetSeats) {
+            } else if (!isPrivateClaim && playerSeat in event.targetSeats) {
                 add(
                     item(
                         event = event,
@@ -240,7 +257,9 @@ object PlayerTraceBuilder {
         relationship = relationship,
         title = title,
         detail = detail,
-        factLevel = factLevel
+        factLevel = factLevel,
+        // 来源可见性必须一路带到 UI：私有来源要显式标注，见 PlayerTraceItem.sourceVisibility
+        sourceVisibility = event.visibility
     )
 
     // ————————————————————————————————————————————————————————

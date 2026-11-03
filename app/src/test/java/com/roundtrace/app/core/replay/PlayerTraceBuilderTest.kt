@@ -151,9 +151,11 @@ class PlayerTraceBuilderTest {
         val nominated = items.filter { it.category == PlayerTraceCategory.NOMINATED }
         val mission = items.filter { it.category == PlayerTraceCategory.MISSION_MEMBER }
 
-        // 4 号被提名两次：任务 1 第 2 次提案（2/3/4）、任务 2 第 1 次提案（4/5/6）
-        assertEquals("被提名的项目数不对：${nominated.map { it.title }}", 2, nominated.size)
-        // 4 号实际在任务 1 第 2 次提案对应的任务结果里（2/3/4/5），任务 2 结果里也在（4/5/6）
+        // 4 号只在任务 1 第 2 次提案里被别人（2 号）提名：任务 2 他是队长兼队员，走队长口径
+        assertEquals("被提名的项目数不对：${nominated.map { it.title }}", 1, nominated.size)
+        assertEquals(1, nominated.single().questNo)
+        assertEquals(6, nominated.single().occurredOrder)
+        // 4 号在任务 1 第 2 次提案对应的任务结果里（2/3/4/5），任务 2 结果里也在（4/5/6）
         assertEquals("任务队员的项目数不对：${mission.map { it.title }}", 2, mission.size)
 
         val quest1Nomination = nominated.single { it.questNo == 1 }
@@ -483,6 +485,147 @@ class PlayerTraceBuilderTest {
     // ————————————————————————————————————————————————————————————
     // 队长记录不得推断阵营
     // ————————————————————————————————————————————————————————————
+
+    @Test
+    fun selfNominatedLeaderProducesExactlyOneItem() {
+        // 任务 1 第 1 次提案：1 号既是队长也在队伍里
+        val leaderItems = trace(playerSeat = 1).filter { it.occurredOrder == 2 }
+        assertEquals("队长自提名时同一事件只应有 1 条记录", 1, leaderItems.size)
+        val leaderItem = leaderItems.single()
+        assertEquals(PlayerTraceCategory.LEADER, leaderItem.category)
+        assertEquals(PlayerTraceRelationship.PROPOSED_TEAM, leaderItem.relationship)
+        assertTrue(
+            "队长自提名必须写明「本人也在提案队伍中」：${leaderItem.detail}",
+            leaderItem.detail.contains("本人也在提案队伍中")
+        )
+
+        // 2 号是被提议的队员（不是队长），仍应有自己的一条 NOMINATED
+        val teammate = trace(playerSeat = 2).single { it.occurredOrder == 2 }
+        assertEquals(PlayerTraceCategory.NOMINATED, teammate.category)
+        assertEquals(PlayerTraceRelationship.ON_PROPOSED_TEAM, teammate.relationship)
+        assertFalse(
+            "非队长不得拿到队长条目的后缀：${teammate.detail}",
+            teammate.detail.contains("本人也在提案队伍中")
+        )
+
+        // 任务 2 第 1 次提案：4 号是队长兼队员，同样只出 1 条
+        val quest2 = trace(playerSeat = 4).filter { it.occurredOrder == 11 }
+        assertEquals(1, quest2.size)
+        assertEquals(PlayerTraceCategory.LEADER, quest2.single().category)
+        assertTrue(quest2.single().detail.contains("本人也在提案队伍中"))
+        // 5 号只是队员，仍有 NOMINATED
+        assertEquals(
+            PlayerTraceCategory.NOMINATED,
+            trace(playerSeat = 5).single { it.occurredOrder == 11 }.category
+        )
+    }
+
+    // ————————————————————————————————————————————————————————————
+    // 私有声称（PRIVATE_OBSERVER 的 PlayerClaimed）：归属说话人本人，
+    // 且不得从「被提及」这条侧门进到别人的参与记录里。
+    // ————————————————————————————————————————————————————————————
+
+    /** 3 号一条**私有**声称派西维尔，提及 2 号。 */
+    private fun privateClaimEvents(): List<com.roundtrace.app.core.model.MatchEvent> =
+        MatchBuilder.eightPlayerMerlinMordred().apply {
+            playerClaimed(
+                speakerSeat = 3,
+                claimType = ClaimType.ROLE_CLAIM,
+                questNo = 1,
+                claimedRole = RoleId.PERCIVAL,
+                targetSeats = listOf(2),
+                visibility = EventVisibility.PRIVATE_OBSERVER
+            )
+        }.events()
+
+    @Test
+    fun privateClaimIsInvisibleToNonOwnerObserver() {
+        val events = privateClaimEvents()
+        // 观察者是 2 号（既不是说话人，也不是归属人）
+        (1..PLAYER_COUNT).forEach { seat ->
+            assertTrue(
+                "非归属观察者看 $seat 号时不得出现私有声称的任何条目",
+                trace(
+                    playerSeat = seat,
+                    mode = Perspective.OBSERVER_AT_TIME,
+                    observerSeat = 2,
+                    events = events
+                ).isEmpty()
+            )
+        }
+    }
+
+    @Test
+    fun privateClaimNeverAppearsInPublicTrace() {
+        val events = privateClaimEvents()
+        (1..PLAYER_COUNT).forEach { seat ->
+            assertTrue(
+                "公开视角下 $seat 号不得看到私有声称（硬红线）",
+                trace(playerSeat = seat, mode = Perspective.PUBLIC, events = events).isEmpty()
+            )
+        }
+    }
+
+    @Test
+    fun privateClaimDoesNotProduceMentionedOnOtherSeatsTrace() {
+        val events = privateClaimEvents()
+
+        // 观察者 = 3 号（说话人本人），去看被提及的 2 号：不得出现「被提及」
+        assertTrue(
+            "私有声称不得从「被提及」侧门进到 2 号的参与记录",
+            trace(
+                playerSeat = 2,
+                mode = Perspective.OBSERVER_AT_TIME,
+                observerSeat = 3,
+                events = events
+            ).isEmpty()
+        )
+
+        // 上帝视角同样遵守：私有声称只在本人轨迹里
+        assertTrue(
+            "上帝视角下私有声称也不得进到 2 号的轨迹",
+            trace(playerSeat = 2, mode = Perspective.GOD_AFTER_REVEAL, events = events).isEmpty()
+        )
+
+        // 本人（3 号）自己：有且仅有 1 条 SPEAKER
+        val own = trace(
+            playerSeat = 3,
+            mode = Perspective.OBSERVER_AT_TIME,
+            observerSeat = 3,
+            events = events
+        )
+        assertEquals("3 号本人应看到自己那条私有声称", 1, own.size)
+        assertEquals(PlayerTraceCategory.SPEAKER, own.single().category)
+        assertEquals(PlayerTraceRelationship.SPOKE, own.single().relationship)
+    }
+
+    @Test
+    fun privateDerivedItemsCarrySourceVisibility() {
+        // 私有笔记（夹具第 17 个事件，归属 1 号）
+        val note = trace(
+            playerSeat = 1,
+            mode = Perspective.OBSERVER_AT_TIME,
+            observerSeat = 1
+        ).first { it.category == PlayerTraceCategory.PRIVATE_NOTE }
+        assertEquals(EventVisibility.PRIVATE_OBSERVER, note.sourceVisibility)
+
+        // 私有声称——归属说话人本人
+        val claim = trace(
+            playerSeat = 3,
+            mode = Perspective.OBSERVER_AT_TIME,
+            observerSeat = 3,
+            events = privateClaimEvents()
+        ).single()
+        assertEquals(EventVisibility.PRIVATE_OBSERVER, claim.sourceVisibility)
+
+        // 公开事件来源必须是 PUBLIC（否则 UI 会到处挂私有标记）
+        val publicItems = trace(playerSeat = 1, mode = Perspective.PUBLIC)
+        assertTrue("公开视角应有公开来源的条目", publicItems.isNotEmpty())
+        assertTrue(
+            "公开来源的条目 sourceVisibility 必须是 PUBLIC",
+            publicItems.all { it.sourceVisibility == EventVisibility.PUBLIC }
+        )
+    }
 
     @Test
     fun leaderRecordDoesNotImplyAlignment() {

@@ -383,6 +383,7 @@
     <string name="replay_trace_empty">该玩家在当前时间范围内暂无可展示的记录</string>
     <string name="replay_trace_item_desc">跳到第 %1$d 个事件</string>
     <string name="replay_trace_fact_unknown">（记录为未知）</string>
+    <string name="replay_trace_private_source">来自私有记录 · 仅本人可见</string>
 
     <!-- 设置页 -->
     <string name="settings_title">设置</string>
