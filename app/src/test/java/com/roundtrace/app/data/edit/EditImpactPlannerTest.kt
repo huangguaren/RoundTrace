@@ -180,6 +180,142 @@ class EditImpactPlannerTest {
         assertFalse(plan.affected.any { it.eventId == mission.eventId })
     }
 
+    /**
+     * D1 回归（QA 对抗性验收发现）：**双胞胎车队**反例。
+     *
+     * 第 1 任务：提案 1 `[1,2,3]` 被否决 → 提案 2 仍是 `[1,2,3]` 且通过 → 任务结果 `[1,2,3]`。
+     * 此时任务结果来自**提案 2**。旧实现只比对「任务结果记录的车队 == 被改提案的车队」，
+     * 两个车队一模一样 → 误判为依赖 → 撤销了另一条提案的任务结果（凭空删数据）。
+     *
+     * 现有夹具没抓到，是因为每个任务只录了一次提案（`sameTeam` 与 `APPROVED` 恒等价）。
+     */
+    @Test
+    fun editingRejectedProposalDoesNotRetractMissionOfTwinTeamApprovedProposal() {
+        val builder = MatchBuilder.eightPlayerMerlinMordred()
+            .questStarted(1, 1)
+            .teamProposed(1, 1, 1, listOf(1, 2, 3))
+            .teamVoteRecorded(1, 1, approveCount = 2, rejectCount = 6)
+            .teamProposalResolved(
+                1, 1, ProposalDecision.REJECTED, approveCount = 2, rejectCount = 6
+            )
+            // 换队长重提，队伍与提案 1 完全相同
+            .teamProposed(1, 2, 2, listOf(1, 2, 3))
+            .teamVoteRecorded(1, 2, approveCount = 6, rejectCount = 2)
+            .teamProposalResolved(
+                1, 2, ProposalDecision.APPROVED, approveCount = 6, rejectCount = 2
+            )
+            .missionResolved(1, listOf(1, 2, 3), failCount = 0)
+            .questCycle(2, 3, listOf(3, 4, 5, 6), failCount = 0)
+        val bundle = bundleOf(builder)
+
+        val rejectedProposal = bundle.event<TeamProposed> { it.proposalNo == 1 }
+        val rejectedVote = bundle.event<TeamVoteRecorded> { it.proposalNo == 1 }
+        val rejectedResolution = bundle.event<TeamProposalResolved> { it.proposalNo == 1 }
+        val mission = bundle.event<MissionResolved> { it.questNo == 1 }
+
+        val plan = plan(bundle, rejectedProposal.eventId, rejectedProposal.replaced(listOf(1, 2, 4)))
+
+        assertEquals(
+            "D1：只应撤销被改提案自己的投票与决议",
+            setOf(rejectedVote.eventId, rejectedResolution.eventId),
+            plan.retractIds.toSet()
+        )
+        assertTrue(
+            "D1：任务结果属于另一次通过的提案，即使车队完全相同也不得进影响清单，实际=" +
+                plan.affected.map { it.eventId.raw },
+            plan.affected.none { it.eventId == mission.eventId }
+        )
+        assertFalse("依赖可判定时不应要求人工复核", plan.requiresManualReview)
+    }
+
+    /** D1 变体：改的正是「把队伍送上任务」的那次通过提案 → 任务结果**必须**撤销。 */
+    @Test
+    fun editingApprovedProposalThatExecutedTheMissionRetractsIt() {
+        val builder = MatchBuilder.eightPlayerMerlinMordred()
+            .questStarted(1, 1)
+            .teamProposed(1, 1, 1, listOf(1, 2, 3))
+            .teamVoteRecorded(1, 1, approveCount = 2, rejectCount = 6)
+            .teamProposalResolved(
+                1, 1, ProposalDecision.REJECTED, approveCount = 2, rejectCount = 6
+            )
+            .teamProposed(1, 2, 2, listOf(1, 2, 3))
+            .teamVoteRecorded(1, 2, approveCount = 6, rejectCount = 2)
+            .teamProposalResolved(
+                1, 2, ProposalDecision.APPROVED, approveCount = 6, rejectCount = 2
+            )
+            .missionResolved(1, listOf(1, 2, 3), failCount = 0)
+            .questCycle(2, 3, listOf(3, 4, 5, 6), failCount = 0)
+        val bundle = bundleOf(builder)
+
+        val approvedProposal = bundle.event<TeamProposed> { it.proposalNo == 2 }
+        val approvedVote = bundle.event<TeamVoteRecorded> { it.proposalNo == 2 }
+        val approvedResolution = bundle.event<TeamProposalResolved> { it.proposalNo == 2 }
+        val mission = bundle.event<MissionResolved> { it.questNo == 1 }
+
+        val plan = plan(bundle, approvedProposal.eventId, approvedProposal.replaced(listOf(2, 3, 4)))
+
+        assertEquals(
+            "改了真正执行任务的那次提案，任务结果必须一起失效",
+            setOf(approvedVote.eventId, approvedResolution.eventId, mission.eventId),
+            plan.retractIds.toSet()
+        )
+        assertFalse(plan.requiresManualReview)
+    }
+
+    /**
+     * D2 回归（QA 对抗性验收发现）：**「打开编辑 → 直接保存」撤销了 3 条真实记录**。
+     *
+     * `openEdit` 用原值预填、`canSubmit` 又只校验人数，因此「什么都没改就保存」是现场最容易触发的路径。
+     * 旧实现的 `proposalFindings` 从不比较新旧提案内容，无条件撤销同提案下游事实。
+     */
+    @Test
+    fun savingIdenticalProposalContentHasNoImpact() {
+        val builder = MatchBuilder.eightPlayerMerlinMordred()
+            .questCycle(1, 1, listOf(1, 2, 3), failCount = 0)
+            .questCycle(2, 2, listOf(2, 3, 4, 5), failCount = 0)
+        val bundle = bundleOf(builder)
+
+        val target = bundle.event<TeamProposed> { it.questNo == 1 }
+        // 队长、队伍一字未改（= 打开编辑后直接点保存）
+        val plan = plan(bundle, target.eventId, target.replaced(target.teamSeats))
+
+        assertTrue(
+            "D2：内容未修改时不得产生任何影响，实际受影响=" + plan.affected.map { it.eventId.raw },
+            plan.affected.isEmpty()
+        )
+        assertTrue("D2：撤销清单必须为空", plan.retractIds.isEmpty())
+        assertTrue("D2：也不得提出人工复核", plan.manualReviewReasons.isEmpty())
+        assertFalse(plan.isDestructive)
+        assertEquals(0, plan.retractCount)
+    }
+
+    /** D2 边界：只有队长变了也算内容变化 —— 提案记录就是「谁提的 + 提了谁」。 */
+    @Test
+    fun changingOnlyTheLeaderIsStillAContentChange() {
+        val builder = MatchBuilder.eightPlayerMerlinMordred()
+            .questCycle(1, 1, listOf(1, 2, 3), failCount = 0)
+            .questCycle(2, 2, listOf(2, 3, 4, 5), failCount = 0)
+        val bundle = bundleOf(builder)
+
+        val target = bundle.event<TeamProposed> { it.questNo == 1 }
+        val vote = bundle.event<TeamVoteRecorded> { it.questNo == 1 && it.proposalNo == 1 }
+        val resolution =
+            bundle.event<TeamProposalResolved> { it.questNo == 1 && it.proposalNo == 1 }
+        val mission = bundle.event<MissionResolved> { it.questNo == 1 }
+
+        val plan = plan(
+            bundle,
+            target.eventId,
+            target.replaced(target.teamSeats).copy(leaderSeat = 4)
+        )
+
+        assertEquals(
+            "队长是提案记录的一部分，改了同提案下游事实就要一起复核",
+            setOf(vote.eventId, resolution.eventId, mission.eventId),
+            plan.retractIds.toSet()
+        )
+    }
+
     @Test
     fun ambiguousMissionDependencyRequiresReviewButStillListsRealRetractions() {
         // 没有决议、任务结果也没记录队伍 → 无法判定任务结果是否依赖本次提案修改
