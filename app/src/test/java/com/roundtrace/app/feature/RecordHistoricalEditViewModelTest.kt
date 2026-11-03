@@ -22,6 +22,7 @@ import com.roundtrace.app.feature.record.PendingEdit
 import com.roundtrace.app.feature.record.RecordAction
 import com.roundtrace.app.feature.record.RecordCommitResult
 import com.roundtrace.app.feature.record.RecordViewModel
+import com.roundtrace.app.feature.record.UndoFeedback
 import com.roundtrace.app.util.FakeMatchRepository
 import com.roundtrace.app.util.MainDispatcherRule
 import com.roundtrace.app.util.MatchBuilder
@@ -405,5 +406,54 @@ class RecordHistoricalEditViewModelTest {
         assertNull("同时关闭预览", state.pendingEdit)
         assertEquals("退出编辑态依旧不得写库", before, repository.bundle()!!.events)
         assertNull("草稿不再指向编辑目标", state.draft.editTargetEventId)
+    }
+
+    // ————————————————————————————————————————————————————————
+    // D3：仓库**返回**业务错误（不抛异常）时不得显示「已保存」
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * D3 回归（QA 发现）：`undo()` 只看 Kotlin `Result.isSuccess`，忽略 `AppendResult.error`。
+     *
+     * 生产真实可达：`RoomMatchRepository.retractEvent` 在 `markRetracted` 命中 0 行时
+     * **返回** `failed(WRITE_FAILED)` 而不抛异常 → 连点两次「撤销」，第二次界面仍显示
+     * 「已保存 / 已撤销」。这里用 fake 的 `failNextWriteWithError` 复现同一语义。
+     */
+    @Test
+    fun undoReportingRepositoryErrorIsNotShownAsSaved() = runTest {
+        val repository = repositoryWithTwoQuests()
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        val before = repository.bundle()!!.events
+        repository.failNextWriteWithError = true
+        viewModel.onAction(RecordAction.Undo)
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals("D3：仓库返回 error 必须如实标 FAILED", SaveStatus.FAILED, state.saveStatus)
+        assertEquals(
+            "D3：不得给出「已撤销」反馈",
+            UndoFeedback.FAILED,
+            state.undoFeedback
+        )
+        assertEquals("D3：失败时历史不得被改动", before, repository.bundle()!!.events)
+    }
+
+    /** D3 同一病根的另一处：`deleteEvent()` 同样只看了 `Result.isSuccess`。 */
+    @Test
+    fun deleteEventReportingRepositoryErrorIsNotShownAsSaved() = runTest {
+        val repository = repositoryWithTwoQuests()
+        val viewModel = newViewModel(repository)
+        advanceUntilIdle()
+
+        val before = repository.bundle()!!.events
+        repository.failNextWriteWithError = true
+        viewModel.onAction(RecordAction.DeleteEvent(before.last().eventId))
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals("D3：仓库返回 error 必须如实标 FAILED", SaveStatus.FAILED, state.saveStatus)
+        assertEquals("D3：失败时历史不得被改动", before, repository.bundle()!!.events)
     }
 }

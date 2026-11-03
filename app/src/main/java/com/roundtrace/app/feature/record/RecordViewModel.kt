@@ -438,6 +438,11 @@ class RecordViewModel(
      *
      * 撤销是「事实修正」，不是删除：事件被标记 `retracted = 1`，重放时自动跳过，
      * 审计链仍完整（ARCHITECTURE §9.3-12）。
+     *
+     * **成功判定必须同时看两层**：`runCatching` 的 `Result` 只表示「有没有抛异常」，
+     * 而仓储的错误模型是**返回** `AppendResult(error = ...)` 不抛异常
+     * （`retractEvent` 在 `markRetracted` 命中 0 行时正是如此）。
+     * 只看 `Result.isSuccess` 会把「什么都没撤销」显示成「已撤销」（D3）。
      */
     private fun undo() {
         viewModelScope.launch {
@@ -448,19 +453,25 @@ class RecordViewModel(
                 return@launch
             }
             saveStatusFlow.value = SaveStatus.SAVING
-            val result = runCatching { repository.retractEvent(matchId, target.eventId) }
-            val success = result.isSuccess
+            val result = runCatchingCancellable { repository.retractEvent(matchId, target.eventId) }
+            val success = result.isSuccess && result.getOrNull()?.isSuccess == true
             saveStatusFlow.value = if (success) SaveStatus.SAVED else SaveStatus.FAILED
             undoFeedbackFlow.value = if (success) UndoFeedback.DONE else UndoFeedback.FAILED
         }
     }
 
-    /** 删除指定历史事件（时间线点删除按钮）。 */
+    /**
+     * 删除指定历史事件（时间线点删除按钮）。
+     *
+     * 与 [undo] 同理：`AppendResult.error != null` 必须如实落成 [SaveStatus.FAILED]，
+     * 否则「删除失败」会被界面渲染成「已保存」（D3）。
+     */
     private fun deleteEvent(eventId: com.roundtrace.app.core.model.EventId) {
         viewModelScope.launch {
             saveStatusFlow.value = SaveStatus.SAVING
-            val result = runCatching { repository.retractEvent(matchId, eventId) }
-            saveStatusFlow.value = if (result.isSuccess) SaveStatus.SAVED else SaveStatus.FAILED
+            val result = runCatchingCancellable { repository.retractEvent(matchId, eventId) }
+            val success = result.isSuccess && result.getOrNull()?.isSuccess == true
+            saveStatusFlow.value = if (success) SaveStatus.SAVED else SaveStatus.FAILED
         }
     }
 

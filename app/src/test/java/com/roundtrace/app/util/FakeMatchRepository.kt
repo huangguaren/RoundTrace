@@ -77,6 +77,16 @@ class FakeMatchRepository(
     var failNextWrite: Boolean = false
 
     /**
+     * 置 true 后下一次写入**返回** `AppendResult(error = WRITE_FAILED)`，**不抛异常**。
+     *
+     * 为什么需要它：真实仓储的错误模型是「返回错误值」而不是「抛异常」——
+     * `RoomMatchRepository.retractEvent` 在 `markRetracted` 命中 0 行时 `return failed(...)`。
+     * 旧 fake 只会抛异常，于是 `result.isSuccess` 永远等价于 `AppendResult.isSuccess`，
+     * **掩盖了 D3（把仓库业务错误报成「已保存」）这类缺陷**。这里补齐真实语义。
+     */
+    var failNextWriteWithError: Boolean = false
+
+    /**
      * 可选闸门：非空时 [saveDraft] 会挂起直到它完成。
      *
      * 用途：把「草稿自动保存占住 SAVING 窗口」这个瞬间**固定住**，
@@ -96,6 +106,15 @@ class FakeMatchRepository(
     override suspend fun createMatch(draft: MatchCreationDraft): MatchId = matchId
 
     override suspend fun appendEvent(matchId: MatchId, event: MatchEvent): AppendResult {
+        if (failNextWriteWithError) {
+            failNextWriteWithError = false
+            return AppendResult(
+                matchId = matchId,
+                eventId = event.eventId,
+                occurredOrder = null,
+                error = com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED
+            )
+        }
         if (failNextWrite) {
             failNextWrite = false
             return AppendResult(
@@ -163,8 +182,24 @@ class FakeMatchRepository(
     }
 
     override suspend fun retractEvent(matchId: MatchId, eventId: EventId): AppendResult {
+        // 真实仓储在 `markRetracted` 命中 0 行时**返回** failed(WRITE_FAILED)，不抛异常（D3 的病根）
+        if (failNextWriteWithError) {
+            failNextWriteWithError = false
+            return AppendResult(
+                matchId = matchId,
+                eventId = eventId,
+                occurredOrder = null,
+                error = com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED
+            )
+        }
         val target = eventsState.value.firstOrNull { it.eventId == eventId }
-            ?: return AppendResult(matchId, null, null, error = null)
+            // 与 RoomMatchRepository 对齐：目标不存在时返回 NOT_FOUND（而不是「空错误 = 成功」）
+            ?: return AppendResult(
+                matchId = matchId,
+                eventId = eventId,
+                occurredOrder = null,
+                error = com.roundtrace.app.core.data.RepositoryError.NOT_FOUND
+            )
         eventsState.value = eventsState.value.map {
             if (it.eventId == eventId) retract(it) else it
         }
