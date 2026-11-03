@@ -40,14 +40,21 @@ import kotlin.coroutines.cancellation.CancellationException
  *
  * | 修改对象 | RETRACT（确实失去前提） | REVIEW_ONLY（只提示） |
  * |---|---|---|
- * | `TeamProposed`（同 Q 同 P） | 同 Q 同 P 的投票、同 Q 同 P 的决议、**依赖该提案**的同 Q 任务结果 | 任务结果存在但无法判定是否依赖（无决议且未记录队伍） |
+ * | `TeamProposed`（同 Q 同 P） | 同 Q 同 P 的投票、同 Q 同 P 的决议、**由同 Q 同 P 这次提案执行**的任务结果 | 任务结果存在但该任务没有通过决议、归属无法证明 |
  * | `TeamVoteRecorded` | 无（B35：决议是不可编辑的现场事实） | 同 Q 同 P 的决议与重算结论矛盾时 |
  * | `MissionResolved` | 仅当修改使对局在**该结果处**进入终局时，其后不再可能发生的任务性事件 | 修改使对局**不再是**终局时 |
  *
+ * 两条容易踩空的边界（各对应一个已修复的真实缺陷）：
+ *
+ * 1. **内容一字未改 → 零影响**：提案的队长与队伍都与替换事件完全一致时直接返回空结果。
+ *    「打开编辑 → 直接保存」在 UI 上是可达路径，不能靠「用户不会这么干」兜底。
+ * 2. **任务结果的归属看「哪一次提案被通过」，不看「车队像不像」**：
+ *    同一任务里「提案 1 被否决 → 提案 2 用相同队伍通过」是常态，仅凭车队相同就撤销任务结果
+ *    等于凭空删数据。判定依据是本任务**最后一个 active 的通过决议**的 `proposalNo`。
+ *
  * 关于任务结果的「依赖」判定（比「同 Q 就撤销」更窄，也更安全）：
- * 只有**本提案就是把队伍送上任务的那一次**（本提案决议为 APPROVED），或任务结果记录的车队
- * 与该提案的车队完全一致时，任务结果才算依赖本次修改。否则（例如改的是同一任务里被否决的那个提案）
- * 撤掉任务结果是**凭空删数据**。
+ * 只有**本提案就是把队伍送上任务的那一次**（本任务最后一个通过决议属于本提案）时，
+ * 任务结果才算依赖本次修改。否则（例如改的是同一任务里被否决的那个提案）撤掉任务是**凭空删数据**。
  */
 class EditImpactPlanner(private val reducer: GameReducer) {
 
@@ -158,21 +165,40 @@ class EditImpactPlanner(private val reducer: GameReducer) {
     /**
      * 改组队提案：队伍变了，关于这支队伍的投票与决议就不再是同一件事。
      *
-     * **后续任务一律不动**：任务结果只由「胜负计数」派生，撤销后续任务属于按位置截断（PRD 明令禁止）。
+     * ## 两条必须守住的边界（独立 QA 对抗性验收各抓到一条）
+     *
+     * 1. **内容一字未改 → 零影响**。`openEdit` 用原值预填、`canSubmit` 只校验人数，
+     *    所以「打开编辑 → 直接保存」是现场最容易触发的路径。旧实现从不比较新旧提案内容，
+     *    一次误触就把同提案的投票、决议和任务结果一起撤销（3 条真实记录）。
+     * 2. **任务结果的归属按「是哪一次提案把队伍送上任务的」判定，不按「车队像不像」判定**。
+     *    同一任务里「提案 1 被否决 → 提案 2 用**完全相同的队伍**通过」是真实牌局常态，
+     *    只看车队会把任务结果错算成提案 1 的依赖，凭空删掉一条真实记录。
+     *
+     * **后续任务一律不动**：任务结果只由胜负计数派生，撤销后续任务属于按位置截断（PRD 明令禁止）。
      */
     private fun proposalFindings(
         events: List<MatchEvent>,
         target: TeamProposed,
         replacement: MatchEvent
     ): Findings {
+        val after = replacement as? TeamProposed
+            ?: throw IllegalArgumentException(
+                "提案编辑的替换事件必须是 TeamProposed，实际 ${replacement.type.name}"
+            )
+
+        // ① 内容没有任何变化（队长 + 队伍）：不存在「失去前提」的记录，也就不该有任何影响
+        if (after.leaderSeat == target.leaderSeat &&
+            after.teamSeats.sorted() == target.teamSeats.sorted()
+        ) {
+            return Findings(emptyList(), emptyList())
+        }
+
         val questNo = target.questNo
         val proposalNo = target.proposalNo
         val affected = mutableListOf<AffectedEvent>()
         val manual = mutableListOf<String>()
 
-        // 旧提案的车队：用于判定「任务结果记录的车队是不是这一支」
-        val seatsBefore = target.teamSeats.sorted()
-
+        // 同提案的投票与决议：它们描述的就是「这支队伍这一次提案」，队伍/队长一变即失去前提
         events.forEach { event ->
             when {
                 event is TeamVoteRecorded &&
@@ -203,55 +229,54 @@ class EditImpactPlanner(private val reducer: GameReducer) {
             }
         }
 
-        // 任务结果是否依赖本次修改 —— 只在能证明时撤销
-        val resolution = events.firstOrNull {
+        // ② 任务结果归属于谁：本任务**最后一个 active 的通过决议**就是执行那次任务的人
+        val approvingResolution = events
+            .filterIsInstance<TeamProposalResolved>()
+            .filter { it.questNo == questNo && it.decision == ProposalDecision.APPROVED }
+            .maxByOrNull { it.occurredOrder }
+
+        // 被改提案自己的决议（可能是 REJECTED，也可能是 null = 还没录决议）
+        val ownResolution = events.firstOrNull {
             it is TeamProposalResolved && it.questNo == questNo && it.proposalNo == proposalNo
         } as? TeamProposalResolved
 
-        val missions = events.filterIsInstance<MissionResolved>().filter { it.questNo == questNo }
-        missions.forEach { mission ->
-            val recordedTeam = mission.teamSeats?.sorted()
-            val sameTeam = recordedTeam != null && recordedTeam == seatsBefore
-            when {
-                resolution?.decision == ProposalDecision.APPROVED -> affected += AffectedEvent(
-                    eventId = mission.eventId,
-                    questNo = questNo,
-                    eventType = mission.type,
-                    reason = "第 $questNo 任务的任务结果来自本次被修改的提案（该提案当时为通过），" +
-                        "队伍已改，结果不再对应这支队",
-                    operation = ImpactOperation.RETRACT,
-                    proposalNo = proposalNo
-                )
+        events.filterIsInstance<MissionResolved>()
+            .filter { it.questNo == questNo }
+            .forEach { mission ->
+                when {
+                    // 有明确的执行者 → 任务结果只归属于它，与本次修改无关就一个字都不说
+                    approvingResolution != null ->
+                        if (approvingResolution.proposalNo == proposalNo) {
+                            affected += AffectedEvent(
+                                eventId = mission.eventId,
+                                questNo = questNo,
+                                eventType = mission.type,
+                                reason = "第 $questNo 任务的任务结果来自本次被修改的提案" +
+                                    "（第 $proposalNo 次提案当时为通过），队伍已改，结果不再对应这支队",
+                                operation = ImpactOperation.RETRACT,
+                                proposalNo = proposalNo
+                            )
+                        }
 
-                sameTeam -> affected += AffectedEvent(
-                    eventId = mission.eventId,
-                    questNo = questNo,
-                    eventType = mission.type,
-                    reason = "第 $questNo 任务的任务结果记录的车队与被修改提案完全一致，队伍已改，结果失去前提",
-                    operation = ImpactOperation.RETRACT,
-                    proposalNo = proposalNo
-                )
+                    // 本提案自己就被否决过 → 它从未把任何队伍送上任务，不得撤销任务结果
+                    ownResolution?.decision == ProposalDecision.REJECTED -> Unit
 
-                recordedTeam == null && resolution == null -> {
-                    affected += AffectedEvent(
-                        eventId = mission.eventId,
-                        questNo = questNo,
-                        eventType = mission.type,
-                        reason = "第 $questNo 任务既有任务结果，却没有决议记录、也没有记录队伍，无法判定是否依赖本次修改",
-                        operation = ImpactOperation.REVIEW_ONLY,
-                        proposalNo = proposalNo
-                    )
-                    manual += "第 $questNo 任务的任务结果依赖关系无法判定（无决议记录且未记录队伍）：" +
-                        "请先补录/核对任务结果，再进行会撤销记录的历史修改"
+                    // 本任务没有任何通过决议 → 归属无法证明，只提示、不动手
+                    else -> {
+                        affected += AffectedEvent(
+                            eventId = mission.eventId,
+                            questNo = questNo,
+                            eventType = mission.type,
+                            reason = "第 $questNo 任务既有任务结果，却没有通过决议指明是哪一次提案执行的，" +
+                                "无法判定是否依赖本次修改",
+                            operation = ImpactOperation.REVIEW_ONLY,
+                            proposalNo = proposalNo
+                        )
+                        manual += "第 $questNo 任务的任务结果依赖关系无法判定（该任务没有通过决议）：" +
+                            "请先补录/核对任务结果出自哪一次提案，再进行会撤销记录的历史修改"
+                    }
                 }
-
-                else -> Unit
             }
-        }
-
-        // `replacement` 在本方法里不参与判定：队伍是否真的变化不影响「同提案下游事实必须复核」这一结论，
-        // 但保留参数是为了让规则读起来与 PRD 表格一一对应（改的是这条提案）。
-        check(replacement is TeamProposed) { "提案编辑的替换事件必须是 TeamProposed" }
 
         return Findings(affected, manual)
     }

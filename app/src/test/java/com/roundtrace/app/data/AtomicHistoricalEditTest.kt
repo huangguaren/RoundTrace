@@ -309,6 +309,98 @@ class AtomicHistoricalEditTest {
         )
     }
 
+    /**
+     * D1 回归（QA 发现）：改「被否决的提案」时，**另一个提案**的任务结果被误撤销。
+     *
+     * 夹具是双胞胎车队：提案 1 `[1,2,3]` 被否决，提案 2 同为 `[1,2,3]` 且通过。
+     * 旧实现只看「任务结果记录的车队 == 被改提案的车队」，两个车队相同 → 误判依赖。
+     *
+     * 这里走完真实链路（计划 → 确认 → 落库），断言**任务结果行仍是 active**。
+     */
+    @Test
+    fun editingRejectedProposalKeepsMissionOfTwinTeamApprovedProposal() = runBlocking {
+        val match = createMatch()
+        append(match, events.questStarted(1, 1))
+        append(match, events.teamProposed(1, 1, 1, listOf(1, 2, 3)))
+        append(match, events.teamVoteRecorded(1, 1, playerCount, approveCount = 2, rejectCount = 6))
+        append(
+            match,
+            events.teamProposalResolved(
+                1, 1, ProposalDecision.REJECTED, playerCount, approveCount = 2, rejectCount = 6
+            )
+        )
+        // 换队长重提，队伍完全相同
+        append(match, events.teamProposed(1, 2, 2, listOf(1, 2, 3)))
+        append(match, events.teamVoteRecorded(1, 2, playerCount, approveCount = 6, rejectCount = 2))
+        append(
+            match,
+            events.teamProposalResolved(
+                1, 2, ProposalDecision.APPROVED, playerCount, approveCount = 6, rejectCount = 2
+            )
+        )
+        append(match, events.missionResolved(1, 3, listOf(1, 2, 3), failCount = 0))
+        appendCycle(match, 2, 3, listOf(3, 4, 5, 6), failCount = 0)
+
+        val current = bundle(match)
+        val rejected = current.events.filterIsInstance<TeamProposed>().first { it.proposalNo == 1 }
+        val mission = current.events.filterIsInstance<MissionResolved>().first { it.questNo == 1 }
+
+        val plan = planFor(match, rejected.eventId, events.teamProposed(1, 1, 1, listOf(1, 2, 4)))
+        assertTrue(
+            "D1：任务结果属于另一次通过的提案，不得进影响清单，实际=" +
+                plan.affected.map { it.eventId.raw },
+            plan.affected.none { it.eventId == mission.eventId }
+        )
+        assertFalse("D1：撤销清单里不得出现任务结果", mission.eventId in plan.retractIds)
+
+        val result = apply(match, plan)
+        assertTrue("期望确认成功，实际 $result", result is EditApplyResult.Success)
+        assertFalse(
+            "D1：任务结果行必须仍是 active（不能被误撤销）",
+            rows(match).single { it.eventIdRaw() == mission.eventId.raw }.retracted
+        )
+    }
+
+    /**
+     * D2 回归（QA 发现）：两轮已结算对局，**原值重新保存第 1 任务第 1 次提案**。
+     *
+     * 现场最容易触发的路径：打开编辑（原值预填）→ 直接点保存。
+     * 旧实现无条件撤销同提案下游事实（投票 / 决议 / 任务结果），一次误触就毁掉 3 条真实记录。
+     */
+    @Test
+    fun resubmittingIdenticalProposalContentRetractsNothing() = runBlocking {
+        val match = createMatch()
+        appendCycle(match, 1, 1, listOf(1, 2, 3), failCount = 0)
+        appendCycle(match, 2, 2, listOf(2, 3, 4, 5), failCount = 0)
+
+        val current = bundle(match)
+        val proposal = current.events.filterIsInstance<TeamProposed>().first { it.questNo == 1 }
+        val vote = current.events.filterIsInstance<TeamVoteRecorded>().first { it.questNo == 1 }
+        val resolution =
+            current.events.filterIsInstance<TeamProposalResolved>().first { it.questNo == 1 }
+        val mission = current.events.filterIsInstance<MissionResolved>().first { it.questNo == 1 }
+
+        // 队长、队伍与库内完全一致
+        val identical = events.teamProposed(1, 1, proposal.leaderSeat, proposal.teamSeats)
+        val plan = planFor(match, proposal.eventId, identical)
+
+        assertTrue(
+            "D2：内容未修改时撤销清单必须为空，实际=" + plan.retractIds.map { it.raw },
+            plan.retractIds.isEmpty()
+        )
+        assertTrue("D2：也不得要求人工复核", plan.manualReviewReasons.isEmpty())
+        assertFalse(plan.isDestructive)
+
+        val result = apply(match, plan)
+        assertTrue("确认本身仍应成功（只是不撤销任何其他记录），实际 $result",
+            result is EditApplyResult.Success)
+
+        val after = rows(match).associateBy { it.eventIdRaw() }
+        assertFalse("D2：投票不得被撤销", after.getValue(vote.eventId.raw).retracted)
+        assertFalse("D2：决议不得被撤销", after.getValue(resolution.eventId.raw).retracted)
+        assertFalse("D2：任务结果不得被撤销", after.getValue(mission.eventId.raw).retracted)
+    }
+
     // ————————————————————————————————————————————————————————
     // A04 / A05：改票不静默改决议（B35）
     // ————————————————————————————————————————————————————————
