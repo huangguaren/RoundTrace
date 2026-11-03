@@ -136,3 +136,63 @@ export PATH="$JAVA_HOME/bin:$PATH"
 grep -o "\[PERF\][^<]*" \
   app/build/test-results/testDebugUnitTest/TEST-com.roundtrace.app.feature.ReplayAnalyzePerformanceTest.xml
 ```
+
+---
+
+# 附：P2 轮补充测量（2026-11-03）
+
+> 本节追加在 NX-03 的历史数据之后，**不修改**上文任何数字。
+> 触发原因：P2 给 `EditImpactPlanner` 加了「业务无变化 → 直接拒绝」的闸门，
+> 需要说明它把成本降到了什么量级，而不是宣称「快了 X%」。
+
+## A. 结构性证据（可作硬结论）
+
+`EditImpactPlanCostTest` 用包装 `GameReducer` 计数：
+
+| 路径 | `initialState` | `step` | `replay` |
+|---|---|---|---|
+| 无变化（组队提案 / 任务结果） | 0 | **0** | 0 |
+| 有变化（任务失败牌 1 → 0） | > 0 | **> 0** | 0 |
+
+`replay` 恒为 0 是正常的：`ReplayEngine.replay()` 内部是 `initialState` + 逐条 `step`，
+不走 `GameReducer.replay()`。第一版只数 `replayCalls` 因此得到「有变化也是 0」的假证据，
+断言当场失败 —— 这个口径陷阱已写进测试注释。
+
+结论：**无变化路径在任何规则推进之前返回**，与机器快慢无关。
+
+## B. 同机对照（同构建、两条路径；**不是优化前后**）
+
+| 项 | 值 |
+|---|---|
+| 夹具 | 8 人局 / 2 个任务 / 10 条事件 |
+| 预热 / 采样 | 5 / 40 |
+| 计时 | `System.nanoTime()` 包住单次 `plan()` |
+
+| 路径 | median | p95 | min | max |
+|---|---|---|---|---|
+| 无变化 | 26.3 µs | 40.6 µs | 23.1 µs | 42.0 µs |
+| 有变化（含重放） | 310.5 µs | 676.0 µs | 227.4 µs | 719.6 µs |
+
+同一次运行内约 11.8 倍。但**不能**据此声称提升百分比：上文 §2 已记录同一 stage
+两次运行 median 相差 2 倍的噪声，这里的两个 stage 也不是同一份代码的前后版本。
+
+复现命令：
+
+```bash
+./gradlew :app:testDebugUnitTest --no-daemon \
+  --tests "com.roundtrace.app.data.edit.EditImpactPlanCostTest"
+grep -o "P2-PERF[^<]*" \
+  app/build/test-results/testDebugUnitTest/TEST-com.roundtrace.app.data.edit.EditImpactPlanCostTest.xml
+```
+
+## C. 本轮仍为 `NOT MEASURED`
+
+| 项 | 原因 |
+|---|---|
+| 优化前后耗时对照 | 基线已含该路径，旧版本无法复现 |
+| 设备端帧时间 / 首屏 | NX-05 取消；无可用设备 |
+| 内存与分配次数 | JVM 单测无稳定堆采样 |
+| DB IO 占比 | 夹具不过 Room，刻意隔离纯计算 |
+| Compose 首帧渲染 | Robolectric 管线不等价于真机 |
+
+保留的硬断言：**PUBLIC 快照调用恰好 1 次**（`ReplayAnalyzePerformanceTest`），本轮未放宽。
