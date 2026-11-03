@@ -2,8 +2,10 @@ package com.roundtrace.app.feature.record
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.roundtrace.app.core.data.EditApplyResult
 import com.roundtrace.app.core.data.MatchBundle
 import com.roundtrace.app.core.data.MatchRepository
+import com.roundtrace.app.core.data.edit.EditPlanResult
 import com.roundtrace.app.core.model.EventFactory
 import com.roundtrace.app.core.model.EventId
 import com.roundtrace.app.core.model.EventType
@@ -93,10 +95,12 @@ class RecordViewModel(
     /** NX-06：正在编辑第 N 任务（导航式，不删除数据） */
     private val editingQuestFlow = MutableStateFlow<Int?>(null)
 
-    /** NX-06：修改早期事件后的影响提示 */
-    private val impactWarningFlow = MutableStateFlow<ImpactWarning?>(null)
-
-    /** NX-06：待确认的编辑（先预览，确认后才写库） */
+    /**
+     * NX-06：待确认的历史修改预览。
+     *
+     * **它的存在只代表「算出了影响范围」，不代表写了一半**：用户在预览里点取消，
+     * 库里一行都不会变；点确认才走 `applyConfirmedEdit` 的单事务复合写。
+     */
     private val pendingEditFlow = MutableStateFlow<PendingEdit?>(null)
 
     private var draftSaveJob: Job? = null
@@ -123,7 +127,7 @@ class RecordViewModel(
             editInvalidatedFlow,
             commitInFlightFlow,
             editingQuestFlow,
-            impactWarningFlow
+            pendingEditFlow
         ) { values ->
             @Suppress("UNCHECKED_CAST")
             buildUiState(
@@ -136,7 +140,7 @@ class RecordViewModel(
                 editTargetInvalidated = values[6] as Boolean,
                 commitInFlight = values[7] as Boolean,
                 editingQuest = values[8] as Int?,
-                impactWarning = values[9] as ImpactWarning?
+                pendingEdit = values[9] as PendingEdit?
             )
         }
             .catch { throwable ->
@@ -255,33 +259,8 @@ class RecordViewModel(
 
             is RecordAction.RollbackToQuest -> rollbackToQuest(action.questNo)
             is RecordAction.SetEditingQuest -> editingQuestFlow.value = action.questNo
-            is RecordAction.AcknowledgeImpactWarning -> {
-                impactWarningFlow.value = null
-                editingQuestFlow.value = null
-            }
-            is RecordAction.ConfirmPendingEdit -> {
-                val pending = pendingEditFlow.value ?: return
-                pendingEditFlow.value = null
-                impactWarningFlow.value = null
-                // 真正写库
-                viewModelScope.launch {
-                    saveStatusFlow.value = SaveStatus.SAVING
-                    val result = runCatchingCancellable {
-                        repository.reviseEvent(matchId, pending.targetEventId, pending.replacement)
-                    }
-                    if (result.isSuccess) {
-                        saveStatusFlow.value = SaveStatus.SAVED
-                        editSessionFlow.value = null
-                        commitResultFlow.value = RecordCommitResult.Succeeded
-                    } else {
-                        saveStatusFlow.value = SaveStatus.FAILED
-                    }
-                }
-            }
-            is RecordAction.CancelPendingEdit -> {
-                pendingEditFlow.value = null
-                impactWarningFlow.value = null
-            }
+            is RecordAction.ConfirmPendingEdit -> confirmPendingEdit()
+            is RecordAction.CancelPendingEdit -> cancelPendingEdit()
 
             RecordAction.ClearUndoFeedback -> undoFeedbackFlow.value = null
 
@@ -492,7 +471,14 @@ class RecordViewModel(
         }
     }
 
-    /** 回滚到指定任务：事务化撤销该任务最后逻辑位置之后的所有事件。 */
+    /**
+     * 回滚到指定任务：事务化撤销该任务最后逻辑位置之后的所有事件。
+     *
+     * **NX-06 起没有 UI 入口**（`RecordScreen` 已删除回滚按钮与确认弹窗）。
+     * 历史编辑必须走「影响预览 → 确认」的精确撤销，**不得**按逻辑位置推定受影响集合
+     * （PRD §2.2 决定性约束）。保留该方法只为兼容既有的底层原子性回归测试，
+     * 任何新增 UI 都不允许再调用它。
+     */
     private fun rollbackToQuest(questNo: Int) {
         if (isCommitting) return
         isCommitting = true
@@ -534,9 +520,15 @@ class RecordViewModel(
     }
 
     /**
-     * 提交一次写入：**编辑态走 `reviseEvent`，新增走 `appendEvent`**（C-2）。
+     * 提交一次写入。
      *
-     * 三条硬约束：
+     * **NX-06 起编辑态分成两段**（PRD §2.3「确认前零历史写入」）：
+     * - 新增事件：仍然直接 `appendEvent`（原路径不变）；
+     * - 编辑历史事件：只调用 `planHistoricalEdit` **算出影响范围**，
+     *   **绝不**调用 `reviseEvent` / `retractEvent` / `retractAfterOrder`，也不清草稿；
+     *   真正写库发生在用户点「确认修改并重置 N 条」之后的 [confirmPendingEdit]（单事务复合写）。
+     *
+     * 三条硬约束（新增路径）：
      * 1. **保存中不再接受新的提交**（防重复提交的第一道闸；仓储侧还有并发保护做最终防线）；
      * 2. 失败时**保留用户输入与旧的有效事件**，只把 `SaveStatus` 置 FAILED 并给出重试入口 ——
      *    绝不假装已保存，也绝不静默丢弃输入；
@@ -550,17 +542,20 @@ class RecordViewModel(
         // 防重复提交：判据是「有一次提交在飞」，**不是** saveStatus。
         // 若看 saveStatus，草稿自动保存的 SAVING 窗口会把这次提交直接吞掉（F1）。
         if (isCommitting) return
+
+        if (editTargetEventId != null) {
+            // 编辑态：只预览影响。这一分支**不允许**出现任何写库调用。
+            requestEditPreview(replacement = event, targetEventId = editTargetEventId)
+            return
+        }
+
         isCommitting = true
         commitInFlightFlow.value = true
         viewModelScope.launch {
             try {
                 saveStatusFlow.value = SaveStatus.SAVING
                 val result = runCatchingCancellable {
-                    if (editTargetEventId != null) {
-                        repository.reviseEvent(matchId, editTargetEventId, event)
-                    } else {
-                        repository.appendEvent(matchId, event)
-                    }
+                    repository.appendEvent(matchId, event)
                 }
                 val appendResult = result.getOrNull()
                 val success = result.isSuccess && appendResult?.isSuccess == true
@@ -577,28 +572,6 @@ class RecordViewModel(
                 editSessionFlow.value = null
                 editInvalidatedFlow.value = false
 
-                // NX-06：编辑模式下修改早期事件后，提示后续受影响的记录
-                if (editingQuestFlow.value != null && editTargetEventId != null) {
-                    val warning = when (event) {
-                        is com.roundtrace.app.core.model.MissionResolved -> ImpactWarning(
-                            title = "修改任务结果的影响",
-                            affectedItems = listOf(
-                                "后续所有任务的胜负计数已自动重算",
-                                "如需调整后续记录，请继续在时间线中编辑"
-                            )
-                        )
-                        is com.roundtrace.app.core.model.TeamProposed -> ImpactWarning(
-                            title = "修改提案的影响",
-                            affectedItems = listOf(
-                                "该任务的投票结果已自动重算",
-                                "如需修改投票或任务结果，请继续在时间线中编辑"
-                            )
-                        )
-                        else -> null
-                    }
-                    impactWarningFlow.value = warning
-                }
-
                 // 事件已落库 → 清空本轮表单内容；任务开始事件不保留队长（新任务重选）
                 val keepLeader = event !is com.roundtrace.app.core.model.QuestStarted
                 draftFlow.value = ProposalDraft(
@@ -614,6 +587,163 @@ class RecordViewModel(
                 commitInFlightFlow.value = false
             }
         }
+    }
+
+    // ————————————————————————————————————————————————————————
+    // 历史安全编辑（NX-06 / US-02～US-06）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 计算影响预览（**只读**）。
+     *
+     * 先读一次快照拿到被编辑事件的「修改前值」用于对比展示，再让仓储在单个事务里
+     * 用同一份快照计算计划（令牌与预览内容严格对应）。
+     *
+     * 前置失败（目标已失效）不进预览：`editInvalidated` + FAILED，且保留草稿。
+     */
+    private fun requestEditPreview(replacement: MatchEvent, targetEventId: EventId) {
+        if (isCommitting) return
+        isCommitting = true
+        commitInFlightFlow.value = true
+        viewModelScope.launch {
+            try {
+                saveStatusFlow.value = SaveStatus.SAVING
+                val bundle = runCatchingCancellable { repository.getBundle(matchId) }.getOrNull()
+                val target = bundle?.events?.firstOrNull { it.eventId == targetEventId }
+                if (target == null) {
+                    saveStatusFlow.value = SaveStatus.FAILED
+                    editSessionFlow.value = null
+                    editInvalidatedFlow.value = true
+                    commitResultFlow.value = RecordCommitResult.Failed(
+                        EditFailureReason.TARGET_INVALID
+                    )
+                    return@launch
+                }
+
+                val planned = runCatchingCancellable {
+                    repository.planHistoricalEdit(matchId, targetEventId, replacement)
+                }.getOrNull()
+
+                when (planned) {
+                    is EditPlanResult.Ready -> {
+                        // 预览就绪：历史一行未写，草稿与编辑会话都原样保留
+                        saveStatusFlow.value = SaveStatus.SAVED
+                        pendingEditFlow.value = PendingEdit(
+                            plan = planned.plan,
+                            eventType = target.type,
+                            questNo = target.questNo,
+                            proposalNo = proposalNoOf(target),
+                            beforeSummary = EditDiffText.describe(target),
+                            afterSummary = EditDiffText.describe(replacement)
+                        )
+                    }
+
+                    is EditPlanResult.Rejected -> {
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(planned.reason.name)
+                    }
+
+                    null -> {
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(EditFailureReason.WRITE_FAILED)
+                    }
+                }
+            } finally {
+                isCommitting = false
+                commitInFlightFlow.value = false
+            }
+        }
+    }
+
+    /**
+     * 确认历史修改：**单事务**修订 + 精确撤销（US-04）。
+     *
+     * 分支全部按**业务返回值**判断（P0-2 的修复点），不看 `Result.isSuccess`：
+     * - [EditApplyResult.Success] → 才算成功：清草稿、退出编辑态、关预览、发 Succeeded；
+     * - [EditApplyResult.StalePreview] → 保留输入与编辑会话，用 freshPlan 刷新预览，
+     *   提示「记录已变化，请重新确认」，**零写入**；
+     * - [EditApplyResult.Conflict] → 保留输入、展示人工复核原因，**不得**显示成功；
+     * - [EditApplyResult.Failed] → FAILED + 保留输入。
+     *
+     * 防重入：`isCommitting` 在**调度协程之前**置位，连点两次只有第一次真正发出请求。
+     */
+    private fun confirmPendingEdit() {
+        val pending = pendingEditFlow.value ?: return
+        if (isCommitting) return
+        isCommitting = true
+        commitInFlightFlow.value = true
+        viewModelScope.launch {
+            try {
+                saveStatusFlow.value = SaveStatus.SAVING
+                val applied = runCatchingCancellable {
+                    repository.applyConfirmedEdit(
+                        matchId = matchId,
+                        targetEventId = pending.targetEventId,
+                        replacement = pending.replacement,
+                        confirmedRetractIds = pending.plan.retractIds,
+                        expectedTokens = pending.plan.expectedActive
+                    )
+                }.getOrNull()
+
+                when (applied) {
+                    is EditApplyResult.Success -> onHistoricalEditCommitted()
+
+                    is EditApplyResult.StalePreview -> {
+                        // 记录已变化：刷新清单让用户重新确认；输入与编辑会话原样保留
+                        pendingEditFlow.value = pending.copy(plan = applied.freshPlan)
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(
+                            EditFailureReason.STALE_PREVIEW
+                        )
+                    }
+
+                    is EditApplyResult.Conflict -> {
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(
+                            EditFailureReason.MANUAL_REVIEW_REQUIRED
+                        )
+                    }
+
+                    is EditApplyResult.Failed -> {
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(applied.error.name)
+                    }
+
+                    null -> {
+                        saveStatusFlow.value = SaveStatus.FAILED
+                        commitResultFlow.value = RecordCommitResult.Failed(EditFailureReason.WRITE_FAILED)
+                    }
+                }
+            } finally {
+                isCommitting = false
+                commitInFlightFlow.value = false
+            }
+        }
+    }
+
+    /**
+     * 取消预览（US-03）：关闭预览、**保留草稿与编辑会话**，历史零写入。
+     *
+     * 确认在飞时忽略取消：此时结果已经无法撤回，允许取消只会让结果无处可去。
+     */
+    private fun cancelPendingEdit() {
+        if (isCommitting) return
+        pendingEditFlow.value = null
+    }
+
+    /** 历史修改确认成功后的收尾：与新增路径同一套「成功才清草稿」的契约。 */
+    private fun onHistoricalEditCommitted() {
+        saveStatusFlow.value = SaveStatus.SAVED
+        pendingEditFlow.value = null
+        editSessionFlow.value = null
+        editInvalidatedFlow.value = false
+        draftFlow.value = ProposalDraft()
+        draftTouchedByUser = false
+        viewModelScope.launch {
+            // 只清编辑草稿：新增草稿属于另一条录入线，不能被历史编辑顺手抹掉
+            runCatchingCancellable { repository.clearDraft(matchId, DRAFT_KEY_EDIT) }
+        }
+        commitResultFlow.value = RecordCommitResult.Succeeded
     }
 
     /**
@@ -641,6 +771,10 @@ class RecordViewModel(
      * 不用「事件类型 + 当前轮」定位：那样编辑历史轮次时必然写到当前轮。
      */
     private fun openEdit(eventId: EventId) {
+        // NX-06 / US-03：取消预览后再次点同一条记录时，**不得**用原值覆盖用户还没提交的修改——
+        // 「取消」的契约是「历史零写入 + 输入留在编辑草稿里」，重新预填会把后半句作废。
+        if (editSessionFlow.value?.targetEventId == eventId && draftTouchedByUser) return
+
         viewModelScope.launch {
             val bundle = repository.getBundle(matchId)
             val target = bundle?.events?.firstOrNull { it.eventId == eventId && !it.retracted }
@@ -712,6 +846,8 @@ class RecordViewModel(
     private fun cancelEdit() {
         editSessionFlow.value = null
         editInvalidatedFlow.value = false
+        // 预览属于这一次编辑会话：退出编辑态时一起关掉，避免留下「无人可确认」的对话框
+        pendingEditFlow.value = null
         draftFlow.value = ProposalDraft()
         draftTouchedByUser = false
         viewModelScope.launch {
@@ -776,7 +912,7 @@ class RecordViewModel(
         editTargetInvalidated: Boolean = false,
         commitInFlight: Boolean = false,
         editingQuest: Int? = null,
-        impactWarning: ImpactWarning? = null
+        pendingEdit: PendingEdit? = null
     ): RecordUiState {
         if (bundle == null) {
             return RecordUiState(isLoading = false, errorMessage = "对局不存在或已被删除")
@@ -910,7 +1046,7 @@ class RecordViewModel(
             editTargetInvalidated = editTargetInvalidated,
             commitInFlight = commitInFlight,
             editingQuest = editingQuest,
-            impactWarning = impactWarning,
+            pendingEdit = pendingEdit,
             errorMessage = null
         )
     }

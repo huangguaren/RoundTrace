@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material3.Button
@@ -35,6 +37,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.roundtrace.app.R
+import com.roundtrace.app.core.data.edit.ImpactOperation
 import com.roundtrace.app.core.model.ProposalDecision
 import com.roundtrace.app.core.ui.component.ProposalCard
 import com.roundtrace.app.core.ui.component.QuestStepper
@@ -73,11 +76,15 @@ fun RecordScreen(
 ) {
     var sheet by rememberSaveable { mutableStateOf(RecordSheet.NONE) }
     var showEditSeats by rememberSaveable { mutableStateOf(false) }
-    var showRollbackConfirm by rememberSaveable { mutableStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // C-2：**保存成功后才关弹窗**；失败保持打开（输入与旧事件都还在，可重试）
+    // C-2 / NX-06：**保存成功后才关弹层**；失败保持打开（输入与旧事件都还在，可重试）
+    //
+    // 编辑历史事件时「保存」只算出影响预览：此时关掉录入弹层，把预览对话框推到最前面，
+    // 用户才能在完整的影响清单上做决定（草稿与编辑会话都还在，取消后可继续改）。
     val commitFailedMessage = stringResource(R.string.record_commit_failed)
+    val stalePreviewMessage = stringResource(R.string.record_edit_stale)
+    val manualReviewMessage = stringResource(R.string.record_edit_conflict)
     LaunchedEffect(state.commitResult) {
         when (val result = state.commitResult) {
             is RecordCommitResult.Succeeded -> {
@@ -86,13 +93,22 @@ fun RecordScreen(
             }
 
             is RecordCommitResult.Failed -> {
-                // 失败：弹窗保持打开、输入保留，只提示可重试
-                snackbarHostState.showSnackbar(commitFailedMessage)
+                // 失败：弹层保持打开、输入保留，只提示可重试/需重新确认
+                val message = when (result.reason) {
+                    EditFailureReason.STALE_PREVIEW -> stalePreviewMessage
+                    EditFailureReason.MANUAL_REVIEW_REQUIRED -> manualReviewMessage
+                    else -> commitFailedMessage
+                }
+                snackbarHostState.showSnackbar(message)
                 onAction(RecordAction.AcknowledgeCommit)
             }
 
             null -> Unit
         }
+    }
+
+    LaunchedEffect(state.pendingEdit) {
+        if (state.pendingEdit != null) sheet = RecordSheet.NONE
     }
 
     // 恢复编辑草稿时目标事件已失效：明确告知，而不是静默丢弃用户输入
@@ -413,46 +429,13 @@ fun RecordScreen(
                     )
                 }
 
-                if (showRollbackConfirm > 0) {
-                    androidx.compose.material3.AlertDialog(
-                        onDismissRequest = { showRollbackConfirm = 0 },
-                        title = { Text("回到第 ${showRollbackConfirm} 任务编辑？") },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("操作说明：")
-                                Text("• 所有已记录的数据都会保留，不会被删除", style = MaterialTheme.typography.bodySmall)
-                                Text("• 在下方时间线里直接点击要修改的条目即可编辑", style = MaterialTheme.typography.bodySmall)
-                                Text("• 修改后，相关的后续记录会自动更新", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                showRollbackConfirm = 0
-                            }) { Text("去编辑", color = MaterialTheme.colorScheme.primary) }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showRollbackConfirm = 0 }) { Text("取消") }
-                        }
-                    )
-                }
-
-                // NX-06：修改后的影响提示
-                state.impactWarning?.let { warning ->
-                    androidx.compose.material3.AlertDialog(
-                        onDismissRequest = { onAction(RecordAction.AcknowledgeImpactWarning) },
-                        title = { Text(warning.title) },
-                        text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                warning.affectedItems.forEach { item ->
-                                    Text("• $item", style = MaterialTheme.typography.bodySmall)
-                                }
-                            }
-                        },
-                        confirmButton = {
-                            TextButton(onClick = { onAction(RecordAction.AcknowledgeImpactWarning) }) {
-                                Text("知道了", color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
+                // NX-06：待确认的历史修改 —— 影响预览（确认前历史零写入）
+                state.pendingEdit?.let { pending ->
+                    EditImpactPreviewDialog(
+                        pending = pending,
+                        isSaving = state.isSaving,
+                        onConfirm = { onAction(RecordAction.ConfirmPendingEdit) },
+                        onCancel = { onAction(RecordAction.CancelPendingEdit) }
                     )
                 }
             }
@@ -632,6 +615,158 @@ private fun IssueHints(state: RecordUiState) {
             )
         }
     }
+}
+
+/**
+ * 历史修改的影响预览对话框（NX-06 / US-02、US-03、US-04、US-06）。
+ *
+ * 三件事必须同时可见，否则用户没法做决定：
+ * 1. **改了什么**（修改前 / 修改后的人话摘要）；
+ * 2. **会连带重置什么**（按「任务 · 提案」分组，逐条给类型、原因、`将撤销` / `仅提示`）；
+ * 3. **风险是否可判定**：影响范围算不清且会撤销记录时，**不给**破坏性确认按钮，
+ *    只把原因摆出来（US-06：宁可拒绝，也不做宽泛批量删除）。
+ *
+ * 本组件是纯展示 + 回调：所有判定都来自 [PendingEdit]（由 ViewModel 用领域计划填充）。
+ */
+@Composable
+private fun EditImpactPreviewDialog(
+    pending: PendingEdit,
+    isSaving: Boolean,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val questNo = pending.questNo
+    val title = if (questNo != null) {
+        stringResource(R.string.record_edit_preview_title, questNo)
+    } else {
+        stringResource(R.string.record_edit_preview_title_generic)
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(title) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Dimens.Spacing8)
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.record_edit_preview_subtitle,
+                        EditDiffText.typeLabel(pending.eventType),
+                        questNo ?: 0
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = stringResource(R.string.record_edit_before, pending.beforeSummary),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = stringResource(R.string.record_edit_after, pending.afterSummary),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                if (pending.hasNoImpact) {
+                    Text(
+                        text = stringResource(R.string.record_edit_no_impact),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Text(
+                        text = stringResource(
+                            R.string.record_edit_total,
+                            pending.plan.affected.size,
+                            pending.retractCount,
+                            pending.reviewOnlyCount
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    pending.groups.forEach { group ->
+                        Text(
+                            text = groupTitle(group),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        group.items.forEach { item ->
+                            Text(
+                                text = "• ${EditDiffText.typeLabel(item.eventType)}" +
+                                    "｜${operationTag(item.operation)}｜${item.reason}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (item.operation == ImpactOperation.RETRACT) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (pending.plan.requiresManualReview) {
+                    Text(
+                        text = stringResource(R.string.record_edit_blocked),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    pending.plan.manualReviewReasons.forEach { reason ->
+                        Text(
+                            text = "• $reason",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            // 风险不可判定且会撤销记录 → 不出现破坏性确认按钮（US-06）
+            if (pending.canConfirmDestructive) {
+                TextButton(onClick = onConfirm, enabled = !isSaving) {
+                    Text(
+                        text = if (pending.retractCount > 0) {
+                            stringResource(R.string.record_edit_confirm, pending.retractCount)
+                        } else {
+                            stringResource(R.string.record_edit_confirm_plain)
+                        },
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Text(stringResource(R.string.record_edit_cancel))
+            }
+        }
+    )
+}
+
+/** 影响分组标题：「第 N 任务 · 第 M 次提案」/「第 N 任务」/「其他记录」。 */
+@Composable
+private fun groupTitle(group: AffectedGroup): String {
+    val questNo = group.questNo
+    val proposalNo = group.proposalNo
+    return when {
+        questNo != null && proposalNo != null ->
+            stringResource(R.string.record_edit_group_proposal, questNo, proposalNo)
+
+        questNo != null -> stringResource(R.string.record_edit_group_quest, questNo)
+
+        else -> stringResource(R.string.record_edit_group_other)
+    }
+}
+
+/** 操作标签：「将撤销」/「仅提示」。 */
+@Composable
+private fun operationTag(operation: ImpactOperation): String = when (operation) {
+    ImpactOperation.RETRACT -> stringResource(R.string.record_edit_tag_retract)
+    ImpactOperation.REVIEW_ONLY -> stringResource(R.string.record_edit_tag_review)
 }
 
 @Composable
