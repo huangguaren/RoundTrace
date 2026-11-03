@@ -22,6 +22,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -106,26 +107,64 @@ fun HomeScreen(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = Dimens.PageHorizontalPadding,
-                        end = Dimens.PageHorizontalPadding,
-                        top = Dimens.Spacing4,
-                        bottom = FAB_CLEARANCE
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(Dimens.ItemGap)
-                ) {
-                    items(items = state.items, key = { it.matchId }) { item ->
-                        MatchCard(
-                            title = item.title,
-                            playerCount = item.playerCount,
-                            questsStarted = item.questsStarted,
-                            status = item.status,
-                            updatedAtLabel = relativeTimeLabel(item.updatedAtEpochMs),
-                            onClick = { onOpenMatch(item.matchId) },
-                            onOverflowClick = { sheetMatchId = item.matchId }
-                        )
+                else -> {
+                    // UX-05：继续本局焦点卡
+                    val continueItem = state.items.firstOrNull {
+                        it.status == com.roundtrace.app.core.model.MatchStatus.IN_PROGRESS
+                    }
+                    val listItems = if (continueItem != null) {
+                        state.items.filter { it.matchId != continueItem.matchId }
+                    } else {
+                        state.items
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = Dimens.PageHorizontalPadding,
+                            end = Dimens.PageHorizontalPadding,
+                            top = Dimens.Spacing4,
+                            bottom = FAB_CLEARANCE
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(Dimens.ItemGap)
+                    ) {
+                        if (continueItem != null) {
+                            item(key = "continue") {
+                                Surface(
+                                    onClick = { onOpenMatch(continueItem.matchId) },
+                                    shape = MaterialTheme.shapes.large,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(Dimens.Spacing16)) {
+                                        Text(
+                                            text = "继续本局",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = continueItem.title,
+                                            style = MaterialTheme.typography.titleLarge
+                                        )
+                                        Text(
+                                            text = "第 ${continueItem.questsStarted} 任务 · ${continueItem.playerCount} 人局",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        items(items = listItems, key = { it.matchId }) { item ->
+                            MatchCard(
+                                title = item.title,
+                                playerCount = item.playerCount,
+                                questsStarted = item.questsStarted,
+                                status = item.status,
+                                updatedAtLabel = relativeTimeLabel(item.updatedAtEpochMs),
+                                onClick = { onOpenMatch(item.matchId) },
+                                onOverflowClick = { sheetMatchId = item.matchId }
+                            )
+                        }
                     }
                 }
             }
