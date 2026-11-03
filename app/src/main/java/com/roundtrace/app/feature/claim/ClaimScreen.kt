@@ -124,7 +124,9 @@ fun ClaimScreen(
                 playerCount = state.playerCount,
                 selectedSeats = state.speakerSeat?.let { setOf(it) } ?: emptySet(),
                 onSeatClick = { onAction(ClaimAction.SelectSpeaker(it)) },
-                singleSelect = true
+                singleSelect = true,
+                seatLabels = state.seatLabels,
+                seatAvatars = state.seatAvatars
             )
 
             // 目标
@@ -137,7 +139,9 @@ fun ClaimScreen(
                 playerCount = state.playerCount,
                 selectedSeats = state.targetSeats,
                 onSeatClick = { onAction(ClaimAction.ToggleTarget(it)) },
-                singleSelect = false
+                singleSelect = false,
+                seatLabels = state.seatLabels,
+                seatAvatars = state.seatAvatars
             )
 
             // 私人笔记模式

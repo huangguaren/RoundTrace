@@ -28,7 +28,11 @@ data class ClaimUiState(
     val beliefType: BeliefType = BeliefType.SUSPECT,
     val saveStatus: SaveStatus = SaveStatus.SAVED,
     val lastSavedClaimId: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** 座位号 → 昵称映射（无昵称时为空字符串，SeatPicker 自动降级为座位号） */
+    val seatLabels: Map<Int, String?> = emptyMap(),
+    /** 座位号 → 头像 URI 映射（无头像时为空） */
+    val seatAvatars: Map<Int, String?> = emptyMap()
 ) {
 
     /** 断言：必须选了标签和发言者才能保存（T55②：主路径不留空）。 */

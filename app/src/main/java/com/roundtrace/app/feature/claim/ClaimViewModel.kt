@@ -38,12 +38,17 @@ class ClaimViewModel(
             _state.value = if (bundle == null) {
                 ClaimUiState(isLoading = false, errorMessage = "对局不存在")
             } else {
+                // 从 participants 构建座位号 → 昵称、头像映射
+                val seatLabels = bundle.participants.associate { it.seat to it.displayName }
+                val seatAvatars = bundle.participants.associate { it.seat to it.avatarUri }
                 ClaimUiState(
                     isLoading = false,
                     matchTitle = bundle.summary.title,
                     playerCount = bundle.config.playerCount,
                     questNo = bundle.summary.questsStarted.takeIf { it > 0 },
-                    speakerSeat = bundle.config.mySeat
+                    speakerSeat = bundle.config.mySeat,
+                    seatLabels = seatLabels,
+                    seatAvatars = seatAvatars
                 )
             }
         }
