@@ -134,6 +134,27 @@
     <string name="record_commit_failed">保存失败，输入已保留，可重试</string>
     <string name="record_quest_not_started">本任务尚未开始（可先提交提案，系统会自动补建任务节点）</string>
 
+    <!-- NX-06：历史修改影响预览（确认前零写入） -->
+    <string name="record_edit_preview_title">修改第 %1$d 任务的记录</string>
+    <string name="record_edit_preview_title_generic">修改历史记录</string>
+    <string name="record_edit_preview_subtitle">%1$s · 第 %2$d 任务</string>
+    <string name="record_edit_before">修改前：%1$s</string>
+    <string name="record_edit_after">修改后：%1$s</string>
+    <string name="record_edit_no_impact">无需重置其他记录</string>
+    <string name="record_edit_total">受影响 %1$d 条：将撤销 %2$d 条，仅提示 %3$d 条</string>
+    <string name="record_edit_group_proposal">第 %1$d 任务 · 第 %2$d 次提案</string>
+    <string name="record_edit_group_quest">第 %1$d 任务</string>
+    <string name="record_edit_group_other">其他记录</string>
+    <string name="record_edit_tag_retract">将撤销</string>
+    <string name="record_edit_tag_review">仅提示</string>
+    <string name="record_edit_blocked">影响范围无法自动判定，本次不允许撤销其他记录。请先核对以下原因。</string>
+    <string name="record_edit_confirm">确认修改并重置 %1$d 条</string>
+    <string name="record_edit_confirm_plain">确认修改</string>
+    <string name="record_edit_cancel">取消</string>
+    <string name="record_edit_stale">记录已变化，请重新确认影响范围</string>
+    <string name="record_edit_conflict">存在需要人工处理的影响，本次未保存</string>
+    <string name="record_edit_not_supported">该记录不支持编辑</string>
+
     <!-- 保存状态 -->
     <string name="save_status_saved">已保存</string>
     <string name="save_status_saving">保存中…</string>

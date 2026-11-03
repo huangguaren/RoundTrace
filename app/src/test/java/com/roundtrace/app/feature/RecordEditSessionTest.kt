@@ -112,9 +112,16 @@ class RecordEditSessionTest {
         )
 
         // 改一个人：把 3 号换成 5 号
+        val eventsBeforeSubmit = repository.bundle()!!.events
         viewModel.onAction(RecordAction.ToggleTeamSeat(3))
         viewModel.onAction(RecordAction.ToggleTeamSeat(5))
         viewModel.onAction(RecordAction.ConfirmProposal)
+        advanceUntilIdle()
+
+        // NX-06：编辑历史事件先出影响预览，**确认前零历史写入**
+        assertNotNull("应先产出待确认预览", viewModel.uiState.value.pendingEdit)
+        assertEquals("确认前不得写库", eventsBeforeSubmit, repository.bundle()!!.events)
+        viewModel.onAction(RecordAction.ConfirmPendingEdit)
         advanceUntilIdle()
 
         val events = repository.bundle()!!.events
@@ -213,9 +220,13 @@ class RecordEditSessionTest {
         advanceUntilIdle()
         val teamBeforeSave = viewModel.uiState.value.draft.teamSeats
 
-        // 模拟写库失败
-        repository.failNextWrite = true
+        // 先拿到预览（预览只读，不会消耗 failNextWrite），再让**确认写库**失败
         viewModel.onAction(RecordAction.ConfirmProposal)
+        advanceUntilIdle()
+        assertNotNull("前提：预览已就绪", viewModel.uiState.value.pendingEdit)
+
+        repository.failNextWrite = true
+        viewModel.onAction(RecordAction.ConfirmPendingEdit)
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
@@ -370,6 +381,9 @@ class RecordEditSessionTest {
         advanceUntilIdle()
         viewModel.onAction(RecordAction.SetVoteSummary(approveCount = 3, rejectCount = 5))
         viewModel.onAction(RecordAction.SaveVotes)
+        advanceUntilIdle()
+        // NX-06：改票同样先预览、再确认（B35：只修订投票）
+        viewModel.onAction(RecordAction.ConfirmPendingEdit)
         advanceUntilIdle()
 
         val decisionsAfter = repository.bundle()!!.events

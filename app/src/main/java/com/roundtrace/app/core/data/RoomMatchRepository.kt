@@ -2,6 +2,10 @@ package com.roundtrace.app.core.data
 
 import androidx.room.withTransaction
 import com.roundtrace.app.BuildConfig
+import com.roundtrace.app.core.data.edit.ActiveEventToken
+import com.roundtrace.app.core.data.edit.EditImpactPlanner
+import com.roundtrace.app.core.data.edit.EditPlanRejection
+import com.roundtrace.app.core.data.edit.EditPlanResult
 import com.roundtrace.app.core.database.EventCodec
 import com.roundtrace.app.core.database.Mapping
 import com.roundtrace.app.core.database.RoundTraceDatabase
@@ -78,6 +82,9 @@ class RoomMatchRepository(
     private val roleDao = database.roleAssignmentDao()
     private val eventDao = database.matchEventDao()
     private val draftDao = database.matchDraftDao()
+
+    /** NX-06：历史编辑的影响范围计算（纯函数，只依赖 reducer）。 */
+    private val editPlanner = EditImpactPlanner(reducer)
 
     private val now: Long
         get() = clock.millis()
@@ -365,6 +372,152 @@ class RoomMatchRepository(
     }
 
     // ————————————————————————————————————————————————————————
+    // 历史安全编辑（NX-06）
+    // ————————————————————————————————————————————————————————
+
+    /**
+     * 影响预览：**只读**。
+     *
+     * 快照与令牌在同一个事务内读取，保证「用户看到的清单」= 「确认时要校验的现状」。
+     * 这里刻意不做任何写入，也不刷新 `updatedAt` —— 浏览历史必须零写库（A01）。
+     */
+    override suspend fun planHistoricalEdit(
+        matchId: MatchId,
+        targetEventId: EventId,
+        replacement: MatchEvent
+    ): EditPlanResult = try {
+        database.withTransaction {
+            val bundle = readBundleLocked(matchId)
+                ?: return@withTransaction EditPlanResult.Rejected(
+                    EditPlanRejection.TARGET_NOT_FOUND,
+                    "对局不存在或已被删除"
+                )
+            editPlanner.plan(
+                bundle = bundle,
+                expectedActive = activeTokensLocked(matchId, bundle),
+                targetEventId = targetEventId,
+                replacement = replacement
+            )
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        android.util.Log.w(DB_LOG_TAG, "历史编辑预览失败：matchId=${matchId.raw}", failure)
+        EditPlanResult.Rejected(
+            EditPlanRejection.PLAN_FAILED,
+            "无法读取当前历史快照，请重试"
+        )
+    }
+
+    /**
+     * 确认执行：**修订 + 精确撤销 + 投影重算**在同一事务内完成。
+     *
+     * 与 [reviseEvent] 的区别不只是「多撤几条」：
+     * - [reviseEvent] 信任调用方给出的目标，事务内只复核该目标是否仍有效；
+     * - 本方法**不信任 UI 传来的任何集合**：事务内用新鲜数据重算计划，
+     *   令牌与撤销集合都要严格相等，否则返回 [EditApplyResult.StalePreview] 且零写入。
+     *
+     * 异常策略：
+     * - `CancellationException` 原样抛出（协程取消必须传播）；
+     * - 其它异常 → 记日志 + [EditApplyResult.Failed]，事务已由 `withTransaction` 整体回滚。
+     */
+    override suspend fun applyConfirmedEdit(
+        matchId: MatchId,
+        targetEventId: EventId,
+        replacement: MatchEvent,
+        confirmedRetractIds: List<EventId>,
+        expectedTokens: List<ActiveEventToken>
+    ): EditApplyResult {
+        val committedAt = now
+        return try {
+            database.withTransaction {
+                val bundle = readBundleLocked(matchId)
+                    ?: return@withTransaction EditApplyResult.Failed(RepositoryError.NOT_FOUND)
+
+                // ① 新鲜令牌 + 新鲜计划：所有判定都基于事务内的现状，不信任 UI 的快照
+                val tokens = activeTokensLocked(matchId, bundle)
+                val planned = editPlanner.plan(
+                    bundle = bundle,
+                    expectedActive = tokens,
+                    targetEventId = targetEventId,
+                    replacement = replacement
+                )
+                val plan = when (planned) {
+                    is EditPlanResult.Ready -> planned.plan
+                    is EditPlanResult.Rejected -> {
+                        android.util.Log.w(
+                            DB_LOG_TAG,
+                            "确认历史修改被拒绝：${planned.reason.name} ${planned.detail}"
+                        )
+                        return@withTransaction EditApplyResult.Failed(
+                            RepositoryError.INVALID_SUPERSEDE_TARGET
+                        )
+                    }
+                }
+
+                // ② 快照令牌必须逐条相等：位置或修订序号变化都说明「预览不是现在的历史」
+                if (!sameTokens(tokens, expectedTokens)) {
+                    return@withTransaction EditApplyResult.StalePreview(plan)
+                }
+
+                // ③ 用户确认的撤销集合必须与规则判定完全一致（多一条少一条都不签）
+                if (plan.retractIds.toSet() != confirmedRetractIds.toSet()) {
+                    return@withTransaction EditApplyResult.StalePreview(plan)
+                }
+
+                // ④ 需要人工复核且会删记录 → 拒绝，让用户明确修复路径（US-06）
+                if (plan.requiresManualReview && plan.isDestructive) {
+                    return@withTransaction EditApplyResult.Conflict(plan.manualReviewReasons)
+                }
+
+                val target = bundle.events.firstOrNull { it.eventId == targetEventId }
+                    ?: return@withTransaction EditApplyResult.Failed(
+                        RepositoryError.INVALID_SUPERSEDE_TARGET
+                    )
+
+                // ⑤ 修订：策略校验已在 planner 内用同一份 EventRevisionPolicy 完成；
+                //    reviseWithSlot 负责「继承 logicalPosition、revisionSeq + 1、旧版本 retracted = 1」，
+                //    撤销命中 0 行会抛异常 → 整个事务回滚。
+                val slot = eventDao.reviseWithSlot(
+                    matchId = matchId.raw,
+                    oldEventId = target.eventId.raw,
+                    entityProvider = { s ->
+                        codec.encode(
+                            replacement,
+                            matchId,
+                            s.occurredOrder,
+                            s.logicalPosition,
+                            s.revisionSeq
+                        ).copy(supersedesId = target.eventId.raw)
+                    },
+                    now = committedAt
+                )
+                check(slot.logicalPosition > 0) {
+                    "修订槽位非法：logicalPosition=${slot.logicalPosition}"
+                }
+
+                // ⑥ 精确撤销：每条必须恰好命中 1 行（0 行 = 已被并发撤销 / 不属于本局）
+                plan.retractIds.forEach { id ->
+                    val affected = eventDao.markRetracted(matchId.raw, id.raw)
+                    check(affected == 1) {
+                        "撤销受影响事件失败：eventId=${id.raw}, affected=$affected"
+                    }
+                }
+
+                // ⑦ 事务内只重算一次投影（同时刷新 updatedAt）
+                recomputeProjectionLocked(matchId)
+
+                EditApplyResult.Success(replacement.eventId)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            android.util.Log.w(DB_LOG_TAG, "确认历史修改失败，事务已撤销：matchId=${matchId.raw}", failure)
+            EditApplyResult.Failed(RepositoryError.WRITE_FAILED)
+        }
+    }
+
+    // ————————————————————————————————————————————————————————
     // 角色 / 状态
     // ————————————————————————————————————————————————————————
 
@@ -628,6 +781,49 @@ class RoomMatchRepository(
 
     private fun failed(matchId: MatchId, error: RepositoryError): AppendResult =
         AppendResult(matchId = matchId, eventId = null, occurredOrder = null, error = error)
+
+    /**
+     * 读取本局全部 active 事件的快照令牌。
+     *
+     * **必须从实体行取** `logicalPosition` / `revisionSeq`：领域 `MatchEvent` 没有这两个字段
+     * （RT-003 Step 1 刻意没加）。用 `occurredOrder` 冒充 `logicalPosition` 在正常数据上恰好相等，
+     * 但修订链一多就会「看起来对、实际没校验到」，这是最难查的一类 bug。
+     *
+     * 顺序按 [MatchBundle.events]（逻辑位置升序），并逐条对齐：实体行缺失时返回的列表会比
+     * `bundle.events` 短，planner 的令牌数量校验会直接判为过期。
+     */
+    private suspend fun activeTokensLocked(
+        matchId: MatchId,
+        bundle: MatchBundle
+    ): List<ActiveEventToken> {
+        val rowsById = eventDao.listActive(matchId.raw).associateBy { it.id }
+        return bundle.events.mapNotNull { event ->
+            val row = rowsById[event.eventId.raw] ?: return@mapNotNull null
+            ActiveEventToken(
+                eventId = event.eventId,
+                logicalPosition = row.logicalPosition,
+                revisionSeq = row.revisionSeq
+            )
+        }
+    }
+
+    /** 令牌集合严格相等（与顺序无关，但每条的位置/修订序号都必须一致）。 */
+    private fun sameTokens(
+        fresh: List<ActiveEventToken>,
+        expected: List<ActiveEventToken>
+    ): Boolean {
+        if (fresh.size != expected.size) return false
+        val normalize = { tokens: List<ActiveEventToken> ->
+            tokens.sortedWith(compareBy({ it.logicalPosition }, { it.eventId.raw }))
+        }
+        val left = normalize(fresh)
+        val right = normalize(expected)
+        return left.indices.all { index ->
+            left[index].eventId == right[index].eventId &&
+                left[index].logicalPosition == right[index].logicalPosition &&
+                left[index].revisionSeq == right[index].revisionSeq
+        }
+    }
 
     private fun hasQuestStarted(events: List<MatchEvent>, questNo: Int): Boolean =
         events.any { it.type == EventType.QUEST_STARTED && it.questNo == questNo && !it.retracted }

@@ -1,15 +1,20 @@
 package com.roundtrace.app.feature.record
 
+import com.roundtrace.app.core.data.edit.AffectedEvent
+import com.roundtrace.app.core.data.edit.EditImpactPlan
 import com.roundtrace.app.core.model.EventId
 import com.roundtrace.app.core.model.EventType
 import com.roundtrace.app.core.model.MatchEvent
 import com.roundtrace.app.core.model.MatchStatus
 import com.roundtrace.app.core.model.MatchSummary
 import com.roundtrace.app.core.model.MissionOutcome
+import com.roundtrace.app.core.model.MissionResolved
 import com.roundtrace.app.core.model.ProposalDecision
 import com.roundtrace.app.core.model.RecordPhase
 import com.roundtrace.app.core.model.RuleIssue
+import com.roundtrace.app.core.model.TeamProposed
 import com.roundtrace.app.core.model.TeamVoteChoice
+import com.roundtrace.app.core.model.TeamVoteRecorded
 import com.roundtrace.app.core.replay.TimelineEntry
 import com.roundtrace.app.core.ui.component.QuestSlot
 import com.roundtrace.app.core.ui.component.SaveStatus
@@ -102,7 +107,7 @@ data class ProposalUiModel(
 )
 
 /**
- * 可编辑的事件类型**白名单**（主理人 2026-11-02 裁决：3 类）。
+ * 可编辑的事件类型**白名单**（主理人 2026-11-02 裁决：3 类；B35 / B37）。
  *
  * | 事件 | 可编辑 | 理由 |
  * |---|---|---|
@@ -113,14 +118,13 @@ data class ProposalUiModel(
  * 「改票数导致决议矛盾」与「直接改决议」两条路径打架；要改走显式「撤销再重录」 |
  * | `QUEST_STARTED` / `PLAYER_CLAIMED` / `PRIVATE_NOTE_ADDED` | ❌ | 轮次锚点 / 语义事实 / 私人内容 |
  *
- * 白名单放在状态层而不是散在 UI：**编辑入口的唯一判据**只能有一处，
- * 否则「时间线能点开、但保存时报类型不支持」这类不一致迟早出现。
+ * NX-06 起真正的**定义**在 [com.roundtrace.app.core.data.edit.EditImpactPlanner.EDITABLE_TYPES]：
+ * 仓储在事务内也要用同一份白名单做准入校验，若这里再独立写一份，两份迟早漂移
+ * （典型症状：时间线能点开、保存时报「类型不支持」）。本属性保留原名以维持
+ * 「编辑入口判据只有一处」的读法，内容委托领域层。
  */
-val EDITABLE_EVENT_TYPES: Set<EventType> = setOf(
-    EventType.TEAM_PROPOSED,
-    EventType.TEAM_VOTE_RECORDED,
-    EventType.MISSION_RESOLVED
-)
+val EDITABLE_EVENT_TYPES: Set<EventType> =
+    com.roundtrace.app.core.data.edit.EditImpactPlanner.EDITABLE_TYPES
 
 /**
  * 编辑会话（C-2）。
@@ -155,18 +159,149 @@ sealed interface RecordCommitResult {
  * **全部字段都由 `observeBundle → ReplayEngine.replay` 派生**（T44④）：
  * ViewModel 不重复计算票数、门槛、成败——那些是 `AvalonRules` 的唯一职责。
  */
-/** NX-06：待确认的编辑（先预览，确认后才写库） */
+/**
+ * 待确认的历史修改（NX-06 / US-02）。
+ *
+ * 它**不是**「已经写了一半的事务」，而是「用户点保存后算出的一份影响预览」：
+ * 持有 [plan]（结构化影响范围 + 快照令牌），确认前库里一行都没动。
+ *
+ * @param beforeSummary 修改前值（直接把事件的关键字段渲染成人话，UI 不再解析领域字段）
+ * @param afterSummary 修改后值
+ */
 data class PendingEdit(
-    val targetEventId: EventId,
-    val replacement: MatchEvent,
-    val warning: ImpactWarning
+    val plan: EditImpactPlan,
+    val eventType: EventType,
+    val questNo: Int?,
+    val proposalNo: Int?,
+    val beforeSummary: String,
+    val afterSummary: String
+) {
+
+    val targetEventId: EventId
+        get() = plan.targetId
+
+    val replacement: MatchEvent
+        get() = plan.replacement
+
+    /** 受影响条目，按「任务 · 提案」分组（UI 直接渲染，不做二次聚合）。 */
+    val groups: List<AffectedGroup>
+        get() = plan.affected
+            .groupBy { it.questNo to it.proposalNo }
+            .map { (key, items) -> AffectedGroup(questNo = key.first, proposalNo = key.second, items = items) }
+            .sortedWith(compareBy({ it.questNo ?: Int.MAX_VALUE }, { it.proposalNo ?: Int.MAX_VALUE }))
+
+    /** 将撤销的条数。 */
+    val retractCount: Int
+        get() = plan.retractCount
+
+    /** 只提示、不撤销的条数。 */
+    val reviewOnlyCount: Int
+        get() = plan.reviewOnlyCount
+
+    /** 影响清单为空（「无需重置其他记录」）。 */
+    val hasNoImpact: Boolean
+        get() = plan.affected.isEmpty()
+
+    /**
+     * 是否可以执行破坏性确认。
+     *
+     * 有人工复核原因且本次确实会撤销记录时**不给**可执行的破坏性按钮（US-06）：
+     * 说不清的影响范围，宁可让用户先修数据，也不做宽泛批量撤销。
+     */
+    val canConfirmDestructive: Boolean
+        get() = !(plan.requiresManualReview && plan.isDestructive)
+}
+
+/** 受影响条目的一组（同一任务、同一提案）。 */
+data class AffectedGroup(
+    val questNo: Int?,
+    val proposalNo: Int?,
+    val items: List<AffectedEvent>
 )
 
-/** NX-06：修改早期事件后，后续受影响记录的提示 */
-data class ImpactWarning(
-    val title: String,
-    val affectedItems: List<String>
-)
+/** 事件 → 人话摘要（只服务「修改前后值」展示，不参与任何判定）。 */
+object EditDiffText {
+
+    fun describe(event: MatchEvent): String = when (event) {
+        is TeamProposed -> buildString {
+            append("队长 ${event.leaderSeat} 号")
+            append(" · 队伍 ")
+            append(
+                if (event.teamSeats.isEmpty()) "（空）"
+                else event.teamSeats.sorted().joinToString("/") { "$it 号" }
+            )
+        }
+
+        is TeamVoteRecorded -> buildString {
+            append("赞成 ${event.approveCount ?: "未知"}")
+            append(" · 反对 ${event.rejectCount ?: "未知"}")
+            val unknown = event.unknownVoteCount
+            if (unknown != null) append(" · 未知 $unknown")
+            if (!event.votesBySeat.isNullOrEmpty()) {
+                append(" · 逐人票 ")
+                append(
+                    event.votesBySeat.entries.sortedBy { it.key }
+                        .joinToString("/") { (seat, choice) ->
+                            "$seat 号${if (choice == TeamVoteChoice.APPROVE) "赞" else "反"}"
+                        }
+                )
+            }
+        }
+
+        is MissionResolved -> buildString {
+            val outcome = event.observedOutcome
+            append("失败牌 ${event.failCount ?: "未知"}")
+            if (outcome != null) append(" · 观察结果 ${outcomeLabel(outcome)}")
+            append(" · 队伍 ")
+            append(
+                event.teamSeats?.sorted()?.joinToString("/") { "$it 号" } ?: "（未记录）"
+            )
+        }
+
+        else -> event.type.name
+    }
+
+    private fun outcomeLabel(outcome: MissionOutcome): String = when (outcome) {
+        MissionOutcome.SUCCESS -> "成功"
+        MissionOutcome.FAILED -> "失败"
+        MissionOutcome.UNKNOWN -> "未知"
+    }
+
+    /** 事件类型 → 用户能看懂的名字（时间线与预览共用一套口径）。 */
+    fun typeLabel(type: EventType): String = when (type) {
+        EventType.QUEST_STARTED -> "任务开始"
+        EventType.TEAM_PROPOSED -> "组队提案"
+        EventType.TEAM_VOTE_RECORDED -> "组队投票"
+        EventType.TEAM_PROPOSAL_RESOLVED -> "组队决议"
+        EventType.MISSION_RESOLVED -> "任务结果"
+        EventType.PLAYER_CLAIMED -> "公开发言"
+        EventType.PRIVATE_NOTE_ADDED -> "私人笔记"
+        EventType.ASSASSINATION_RECORDED -> "刺杀结算"
+        EventType.MATCH_ABANDONED -> "弃局"
+        EventType.MATCH_FINALIZED -> "终局核对"
+    }
+}
+
+/**
+ * 历史编辑失败的稳定原因 key（[RecordCommitResult.Failed.reason] 的取值）。
+ *
+ * 之所以要常量而不是裸字符串：这些 key 同时被 ViewModel 写入、被 UI 映射成文案，
+ * 任何一边拼错都只会表现为「提示了一串英文枚举名」，测试也断言不到。
+ */
+object EditFailureReason {
+
+    /** 预览期间记录被别的动作改过：必须重新确认。 */
+    const val STALE_PREVIEW: String = "STALE_PREVIEW"
+
+    /** 影响范围无法自动判定且会撤销记录：只展示原因，不给破坏性确认。 */
+    const val MANUAL_REVIEW_REQUIRED: String = "MANUAL_REVIEW_REQUIRED"
+
+    /** 目标记录已失效（被撤销 / 被删除）。 */
+    const val TARGET_INVALID: String = "TARGET_INVALID"
+
+    /** 写库失败（事务已整体回滚）。 */
+    const val WRITE_FAILED: String = "WRITE_FAILED"
+}
 
 data class RecordUiState(
     val isLoading: Boolean = true,
@@ -227,8 +362,12 @@ data class RecordUiState(
     val commitInFlight: Boolean = false,
     /** NX-06：正在编辑第 N 任务（导航式，不删除数据）；null = 正常记录模式 */
     val editingQuest: Int? = null,
-    /** NX-06：修改早期事件后，后续受影响记录的提示；用户确认后才关闭 */
-    val impactWarning: ImpactWarning? = null,
+    /**
+     * NX-06：待确认的历史修改预览；`null` = 没有待确认的修改。
+     *
+     * 存在期间**历史一行未写**；用户点「确认修改并重置 N 条」才进 [RecordAction.ConfirmPendingEdit]。
+     */
+    val pendingEdit: PendingEdit? = null,
     val errorMessage: String? = null
 ) {
 
@@ -305,7 +444,14 @@ sealed interface RecordAction {
     /** 更新座位名/头像（对局进行中编辑）。 */
     data class UpdateParticipants(val participants: List<com.roundtrace.app.core.model.Participant>) : RecordAction
 
-    /** 回滚到指定任务：删除该任务之后的所有事件。 */
+    /**
+     * 批量撤销某任务之后的所有记录。
+     *
+     * **NX-06 起没有任何 UI 入口**（`RecordScreen` 不再有回滚按钮/弹窗）：
+     * 历史编辑一律走「影响预览 → 确认」的精确撤销。保留该动作只为兼容既有的
+     * 底层原子性测试（`AtomicWriteViewModelTest`），且 ViewModel 内的 KDoc 明确标注
+     * 「仅供低层修复，不得由 UI 调用」。
+     */
     data class RollbackToQuest(val questNo: Int) : RecordAction
 
     /** 清空撤销反馈（UI 展示完 Snackbar 后调用）。 */
@@ -327,12 +473,13 @@ sealed interface RecordAction {
     /** NX-06：进入/退出"编辑第 N 任务"模式（不删除数据，只导航） */
     data class SetEditingQuest(val questNo: Int?) : RecordAction
 
-    /** NX-06：确认影响提示，退出编辑模式 */
-    data object AcknowledgeImpactWarning : RecordAction
-
-    /** NX-06：确认待编辑内容，真正写库 */
+    /**
+     * NX-06：确认待编辑内容 —— 在一个事务里「修订 + 精确撤销」。
+     *
+     * 已经点过一次时会直接返回（防重复提交），且仓储侧还有快照令牌校验做最终防线。
+     */
     data object ConfirmPendingEdit : RecordAction
 
-    /** NX-06：取消待编辑内容，不写库 */
+    /** NX-06：取消待编辑内容 —— 关闭预览，**保留草稿与编辑会话**，历史零写入。 */
     data object CancelPendingEdit : RecordAction
 }

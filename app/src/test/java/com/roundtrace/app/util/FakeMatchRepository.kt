@@ -182,6 +182,108 @@ class FakeMatchRepository(
         return AppendResult(matchId, null, null)
     }
 
+    // ————————————————————————————————————————————————————————
+    // NX-06：历史安全编辑（内存语义，与 RoomMatchRepository 对齐）
+    // ————————————————————————————————————————————————————————
+
+    /** 预览次数（断言「进入编辑态只算计划、不写库」）。 */
+    var planCalls: Int = 0
+        private set
+
+    /** 确认次数（断言重复点击只执行一次）。 */
+    var applyCalls: Int = 0
+        private set
+
+    /** 覆盖下一次确认的业务返回值（用于 STALE_PREVIEW / CONFLICT 分支）。 */
+    var nextApplyResult: com.roundtrace.app.core.data.EditApplyResult? = null
+
+    /** 可选闸门：非空时 [applyConfirmedEdit] 会挂起，用于复现「确认在飞时再点一次」。 */
+    var applyGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    private val editPlanner = com.roundtrace.app.core.data.edit.EditImpactPlanner(
+        com.roundtrace.app.core.rules.DefaultGameRulesRegistry().avalonReducer
+    )
+
+    override suspend fun planHistoricalEdit(
+        matchId: MatchId,
+        targetEventId: EventId,
+        replacement: MatchEvent
+    ): com.roundtrace.app.core.data.edit.EditPlanResult {
+        planCalls += 1
+        val bundle = buildBundle(eventsState.value)
+        return editPlanner.plan(bundle, tokensOf(bundle), targetEventId, replacement)
+    }
+
+    override suspend fun applyConfirmedEdit(
+        matchId: MatchId,
+        targetEventId: EventId,
+        replacement: MatchEvent,
+        confirmedRetractIds: List<EventId>,
+        expectedTokens: List<com.roundtrace.app.core.data.edit.ActiveEventToken>
+    ): com.roundtrace.app.core.data.EditApplyResult {
+        applyCalls += 1
+        applyGate?.await()
+        nextApplyResult?.let { override ->
+            nextApplyResult = null
+            return override
+        }
+        if (failNextWrite) {
+            failNextWrite = false
+            return com.roundtrace.app.core.data.EditApplyResult.Failed(
+                com.roundtrace.app.core.data.RepositoryError.WRITE_FAILED
+            )
+        }
+
+        val bundle = buildBundle(eventsState.value)
+        val tokens = tokensOf(bundle)
+        val planned = editPlanner.plan(bundle, tokens, targetEventId, replacement)
+        val plan = (planned as? com.roundtrace.app.core.data.edit.EditPlanResult.Ready)?.plan
+            ?: return com.roundtrace.app.core.data.EditApplyResult.Failed(
+                com.roundtrace.app.core.data.RepositoryError.INVALID_SUPERSEDE_TARGET
+            )
+
+        if (tokens != expectedTokens) {
+            return com.roundtrace.app.core.data.EditApplyResult.StalePreview(plan)
+        }
+        if (plan.retractIds.toSet() != confirmedRetractIds.toSet()) {
+            return com.roundtrace.app.core.data.EditApplyResult.StalePreview(plan)
+        }
+        if (plan.requiresManualReview && plan.isDestructive) {
+            return com.roundtrace.app.core.data.EditApplyResult.Conflict(plan.manualReviewReasons)
+        }
+
+        val target = bundle.events.firstOrNull { it.eventId == targetEventId }
+            ?: return com.roundtrace.app.core.data.EditApplyResult.Failed(
+                com.roundtrace.app.core.data.RepositoryError.INVALID_SUPERSEDE_TARGET
+            )
+
+        // 与 reviseWithSlot 对齐：旧版本 retracted = 1，新版本**继承原逻辑位置**（这里用 occurredOrder 表示）
+        val retractSet = plan.retractIds.toSet()
+        val next = eventsState.value
+            .map { event ->
+                when {
+                    event.eventId == target.eventId -> retract(event)
+                    event.eventId in retractSet -> retract(event)
+                    else -> event
+                }
+            }
+            .plus(reorder(replacement, target.occurredOrder))
+            .sortedBy { it.occurredOrder }
+        eventsState.value = next
+        status = if (status == MatchStatus.DRAFT) MatchStatus.IN_PROGRESS else status
+        return com.roundtrace.app.core.data.EditApplyResult.Success(replacement.eventId)
+    }
+
+    /** 内存版令牌：`logicalPosition` 用 `occurredOrder` 表示，修订序号恒为 0（fake 不建修订链）。 */
+    private fun tokensOf(bundle: MatchBundle): List<com.roundtrace.app.core.data.edit.ActiveEventToken> =
+        bundle.events.map {
+            com.roundtrace.app.core.data.edit.ActiveEventToken(
+                eventId = it.eventId,
+                logicalPosition = it.occurredOrder,
+                revisionSeq = 0
+            )
+        }
+
     override suspend fun saveRoleAssignments(
         matchId: MatchId,
         assignments: List<RoleAssignment>
