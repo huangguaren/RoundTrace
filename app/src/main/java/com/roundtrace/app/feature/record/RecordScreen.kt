@@ -663,15 +663,30 @@ internal fun EditImpactPreviewDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    text = stringResource(R.string.record_edit_before, pending.beforeSummary),
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text(
-                    text = stringResource(R.string.record_edit_after, pending.afterSummary),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                // UX-09：前后对比卡片 —— before 灰色底，after 主色底，层次更清晰
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = stringResource(R.string.record_edit_before, pending.beforeSummary),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(Dimens.Spacing8)
+                    )
+                }
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = stringResource(R.string.record_edit_after, pending.afterSummary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(Dimens.Spacing8)
+                    )
+                }
 
                 if (pending.hasNoImpact) {
                     Text(
