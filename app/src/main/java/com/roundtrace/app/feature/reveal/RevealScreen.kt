@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
 import com.roundtrace.app.core.model.RoleId
+import com.roundtrace.app.core.ui.identity.SeatIdentityView
 import com.roundtrace.app.core.ui.roleDisplayName
 import com.roundtrace.app.core.ui.theme.ButtonShape
 import com.roundtrace.app.core.ui.theme.Dimens
@@ -107,6 +108,38 @@ fun RevealScreen(
                 state = state,
                 onRoleSelected = { onAction(RevealAction.SetSeatRole(row.seat, it)) }
             )
+        }
+
+        if (state.planMismatchWarning.isNotEmpty()) {
+            item {
+                Surface(
+                    shape = PanelShape,
+                    color = extended.accentContainer,
+                    contentColor = extended.onAccentContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(Dimens.Spacing12)) {
+                        Text(
+                            text = state.planMismatchWarning,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        OutlinedButton(
+                            onClick = { onAction(RevealAction.ConfirmPlanMismatch) },
+                            enabled = !state.planMismatchConfirmed,
+                            shape = ButtonShape,
+                            modifier = Modifier.heightIn(min = Dimens.MinTouchTarget)
+                        ) {
+                            Text(
+                                text = if (state.planMismatchConfirmed) {
+                                    stringResource(R.string.reveal_plan_mismatch_confirmed)
+                                } else {
+                                    stringResource(R.string.reveal_plan_mismatch_confirm)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -225,10 +258,10 @@ private fun RevealRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = stringResource(R.string.reveal_seat_role, seat),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface
+            SeatIdentityView(
+                display = state.seatIdentity.display(seat),
+                avatarSize = Dimens.Spacing32,
+                modifier = Modifier.weight(1f)
             )
             Box {
                 OutlinedButton(
@@ -252,24 +285,28 @@ private fun RevealRow(
                             expanded = false
                         }
                     )
+                    val policy = RevealRoleQuotaPolicy.fromQuotaMap(state.roleQuota)
                     REVEALABLE_ROLES.forEach { role ->
-                        // 配额逻辑：计算除当前座位外已用数量
-                        val used = state.rows.count { it.roleId == role && it.seat != seat }
-                        val quota = state.roleQuota[role] ?: 0
-                        val isFull = quota > 0 && used >= quota
+                        // 纯策略：按本局 roleSlots 合计配额，且排除当前座位自己的占用。
+                        // 超额**不再禁用**：计划 ≠ 真相，必须保留按实际身份记录的路径，
+                        // 由下方「计划与真实身份不一致」警告 + 独立确认承接。
+                        val decision = policy.evaluate(state.rows, seat, role)
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = if (quota > 0) {
-                                        "${roleDisplayName(role)} $used/$quota"
+                                    text = if (decision.planned > 0) {
+                                        "${roleDisplayName(role)} ${decision.usageLabel}" +
+                                            if (decision.isOverPlan) " · 与计划不符" else ""
                                     } else {
                                         roleDisplayName(role)
                                     },
-                                    color = if (isFull) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                                    else MaterialTheme.colorScheme.onSurface
+                                    color = if (decision.isOverPlan) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
                             },
-                            enabled = !isFull,
                             onClick = {
                                 onRoleSelected(role)
                                 expanded = false

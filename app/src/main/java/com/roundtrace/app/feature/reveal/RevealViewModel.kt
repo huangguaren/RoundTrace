@@ -16,6 +16,7 @@ import com.roundtrace.app.core.model.WinReason
 import com.roundtrace.app.core.replay.ReplayEngine
 import com.roundtrace.app.core.rules.GameReducer
 import com.roundtrace.app.core.ui.component.SaveStatus
+import com.roundtrace.app.core.ui.identity.SeatDisplayResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,6 +70,10 @@ class RevealViewModel(
             )
         }
 
+        // 配额只从本局 config.roleSlots 合计；不从人数硬编码，也不重建标准预设。
+        val quotaPolicy = RevealRoleQuotaPolicy(bundle.config.roleSlots)
+        val mismatch = quotaPolicy.planMismatch(rows)
+
         return current.copy(
             isLoading = false,
             matchTitle = bundle.summary.title,
@@ -80,8 +85,9 @@ class RevealViewModel(
             winner = gameState.outcome?.winner ?: current.winner,
             winReason = gameState.outcome?.reason ?: current.winReason,
             errorMessage = null,
-            // 从对局配置构建角色配额
-            roleQuota = bundle.config.roleSlots.associate { it.roleId to it.count }
+            roleQuota = quotaPolicy.quotaMap(),
+            seatIdentity = SeatDisplayResolver.resolve(bundle.participants, playerCount),
+            planMismatchWarning = mismatch.description
         )
     }
 
@@ -99,25 +105,26 @@ class RevealViewModel(
                 _state.value.copy(targetSeat = action.seat)
 
             RevealAction.Reveal -> reveal()
+            RevealAction.ConfirmPlanMismatch ->
+                _state.value = _state.value.copy(planMismatchConfirmed = true)
             RevealAction.SaveAssassination -> saveAssassination()
         }
     }
 
     private fun updateRow(seat: Int, roleId: RoleId) {
         val current = _state.value
-        val currentRole = current.rows.firstOrNull { it.seat == seat }?.roleId
+        val updated = current.rows.map { if (it.seat == seat) it.copy(roleId = roleId) else it }
+        val policy = RevealRoleQuotaPolicy.fromQuotaMap(current.roleQuota)
+        val mismatch = policy.planMismatch(updated)
 
-        // 配额校验：UNKNOWN 不限数量；其他角色满额则拒绝
-        if (roleId != RoleId.UNKNOWN && currentRole != roleId) {
-            if (current.isRoleFull(roleId)) {
-                _state.value = current.copy(errorMessage = "$roleId 已满额")
-                return
-            }
-        }
-
+        // 超额**不硬拒绝**：计划只是创建时的配置，真实身份可能不同。
+        // 写入草稿、给出差异警告，由 UI 引导「按实际身份记录」二次确认后才揭晓。
         _state.value = current.copy(
-            rows = current.rows.map { if (it.seat == seat) it.copy(roleId = roleId) else it },
-            errorMessage = null
+            rows = updated,
+            errorMessage = null,
+            planMismatchWarning = mismatch.description,
+            // 一旦行内容变化，之前那次确认作废，必须重新确认
+            planMismatchConfirmed = false
         )
     }
 
@@ -125,6 +132,12 @@ class RevealViewModel(
     private fun reveal() {
         val current = _state.value
         if (!current.canReveal) return
+        // 计划与真实身份不一致时必须先由用户明确确认；确认只放行本次写入，
+        // 既不修改 roleSlots，也不篡改已录入的 roleAssignments。
+        if (current.requiresPlanMismatchConfirmation) {
+            _state.value = current.copy(errorMessage = "请先确认「按实际身份记录」后再揭晓")
+            return
+        }
         val assignments = current.rows.map { row ->
             RoleAssignment(
                 seat = row.seat,

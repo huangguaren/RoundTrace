@@ -346,6 +346,8 @@
     <!-- 揭晓 -->
     <string name="reveal_title">结局揭晓</string>
     <string name="reveal_seat_role">%1$d 号角色</string>
+    <string name="reveal_plan_mismatch_confirm">按实际身份记录（与开局计划不一致）</string>
+    <string name="reveal_plan_mismatch_confirmed">已确认按实际身份记录</string>
     <string name="reveal_role_unknown">仍未知</string>
     <string name="reveal_action">揭晓全部身份</string>
     <string name="reveal_done">身份已揭晓</string>

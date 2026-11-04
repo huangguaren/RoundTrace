@@ -5,6 +5,8 @@ import com.roundtrace.app.core.model.MatchStatus
 import com.roundtrace.app.core.model.RoleId
 import com.roundtrace.app.core.model.WinReason
 import com.roundtrace.app.core.ui.component.SaveStatus
+import com.roundtrace.app.core.ui.identity.SeatDisplayResolver
+import com.roundtrace.app.core.ui.identity.SeatIdentity
 
 /** 单个座位的揭晓行（不改动真实身份，只改 `revealState`）。 */
 data class RevealSeatRow(
@@ -33,20 +35,30 @@ data class RevealUiState(
     val targetSeat: Int? = null,
     val saveStatus: SaveStatus = SaveStatus.SAVED,
     val errorMessage: String? = null,
-    /** 每种角色的最大数量（来自 config.roleSlots）；UNKNOWN 不限数量 */
-    val roleQuota: Map<RoleId, Int> = emptyMap()
+    /** 每种角色的最大数量（来自 config.roleSlots）；UNKNOWN 不限数量。 */
+    val roleQuota: Map<RoleId, Int> = emptyMap(),
+    /** 同一份 bundle 快照派生的座位身份（头像 / 昵称 / 座位号）。 */
+    val seatIdentity: SeatIdentity = SeatDisplayResolver.empty(0),
+    /** 真实身份与开局计划的差异描述；空串 = 一致或尚未录完。 */
+    val planMismatchWarning: String = "",
+    /** 用户已明确确认「按实际身份记录（与计划不一致）」。 */
+    val planMismatchConfirmed: Boolean = false
 ) {
 
     /** 每种角色已分配的数量（不含 UNKNOWN）。 */
     fun usedCount(role: RoleId): Int =
         rows.count { it.roleId == role }
 
-    /** 某角色是否已满额。 */
+    /** 某角色是否已满额（按计划名额，不是 Set 唯一性）。 */
     fun isRoleFull(role: RoleId): Boolean {
         if (role == RoleId.UNKNOWN) return false
         val quota = roleQuota[role] ?: return false
-        return usedCount(role) >= quota
+        return quota > 0 && usedCount(role) >= quota
     }
+
+    /** 是否需要用户先确认「计划与真实身份不一致」才能揭晓。 */
+    val requiresPlanMismatchConfirmation: Boolean
+        get() = planMismatchWarning.isNotEmpty() && !planMismatchConfirmed
 
     /** 是否所有座位都已录入角色。 */
     val rolesComplete: Boolean
@@ -80,6 +92,9 @@ sealed interface RevealAction {
 
     /** 保存角色并执行「揭晓」（`revealState = REVEALED` + 写 `revealedAt`）。 */
     data object Reveal : RevealAction
+
+    /** 用户确认「按实际身份记录（与开局计划不一致）」；只影响本次是否放行，不改计划/真相。 */
+    data object ConfirmPlanMismatch : RevealAction
 
     /** 记录刺杀结果（写 `ASSASSINATION_RECORDED`）。 */
     data object SaveAssassination : RevealAction
