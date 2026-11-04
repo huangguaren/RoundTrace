@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -63,7 +64,8 @@ fun RevealScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .padding(contentPadding),
+            .padding(contentPadding)
+            .testTag(REVEAL_LIST_TAG),
         contentPadding = PaddingValues(
             start = Dimens.PageHorizontalPadding,
             end = Dimens.PageHorizontalPadding,
@@ -364,3 +366,6 @@ private fun SeatChoiceButton(
         Text(text = "$seat")
     }
 }
+
+/** 揭晓列表的测试标签（用于「计划差异警告」等屏外卡片的滚动断言）。 */
+internal const val REVEAL_LIST_TAG: String = "reveal_list"
