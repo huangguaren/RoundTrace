@@ -9,6 +9,7 @@ import com.roundtrace.app.core.model.EventFactory
 import com.roundtrace.app.core.model.MatchId
 import com.roundtrace.app.core.model.RoleId
 import com.roundtrace.app.core.ui.component.SaveStatus
+import com.roundtrace.app.core.ui.identity.SeatDisplayResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,9 +39,14 @@ class ClaimViewModel(
             _state.value = if (bundle == null) {
                 ClaimUiState(isLoading = false, errorMessage = "对局不存在")
             } else {
-                // 从 participants 构建座位号 → 昵称、头像映射
-                val seatLabels = bundle.participants.associate { it.seat to it.displayName }
-                val seatAvatars = bundle.participants.associate { it.seat to it.avatarUri }
+                // 统一走 Phase A 的只读解析器：空白昵称/URI 归一化、越界座位丢弃、
+                // 重复 seat 收敛，两处 SeatPicker 与复盘/揭晓使用同一套降级口径。
+                val identity = SeatDisplayResolver.resolve(
+                    bundle.participants,
+                    bundle.config.playerCount
+                )
+                val seatLabels = identity.seatLabels
+                val seatAvatars = identity.seatAvatars
                 ClaimUiState(
                     isLoading = false,
                     matchTitle = bundle.summary.title,

@@ -121,7 +121,7 @@ private fun SeatCell(
     val scheme = MaterialTheme.colorScheme
     val container = if (selected) scheme.primaryContainer else scheme.surfaceVariant
     val content = if (selected) scheme.onPrimaryContainer else scheme.onSurface
-    val description = when {
+    val baseDescription = when {
         selected && badgeLabel != null -> stringResource(
             R.string.seat_picker_desc_selected_role,
             seat,
@@ -131,6 +131,11 @@ private fun SeatCell(
         selected -> stringResource(R.string.seat_picker_desc_selected, seat)
         else -> stringResource(R.string.seat_picker_desc_unselected, seat)
     }
+    // UX-ID-01：无障碍说明必须含**完整**昵称与座位号（昵称在格子里会单行省略）。
+    // 保留原前缀，既有「N 号座位」的匹配仍然成立；无昵称时不追加任何身份信息。
+    val description = seatLabel?.takeIf { it.isNotBlank() }
+        ?.let { "$baseDescription · $it，${seat}号座位" }
+        ?: baseDescription
     val alpha = if (enabled) 1f else DISABLED_ALPHA
 
     // UX-07：按压微动效 —— 按下时 scale 0.95，松开弹簧回弹
@@ -170,7 +175,10 @@ private fun SeatCell(
             SeatAvatarImage(
                 uri = avatarUri,
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    // 头像加载成功时换掉占位底色，避免图片边缘露出色块
+                    .background(if (avatarLoaded) scheme.surfaceVariant else container),
                 onLoadStateChange = { avatarLoaded = it }
             ) {
                 // 占位：座位名优先，否则座位号
@@ -183,18 +191,20 @@ private fun SeatCell(
                     color = content.copy(alpha = alpha)
                 )
             }
-            if (avatarLoaded) {
-                // 右下角数字角标
-                Text(
-                    text = seat.toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = scheme.onPrimary,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .background(scheme.primary.copy(alpha = 0.85f), androidx.compose.foundation.shape.CircleShape)
-                        .padding(horizontal = 5.dp, vertical = 2.dp)
-                )
-            }
+            // 座位号常驻：有昵称、有头像、头像失效都必须能定位（UX-ID-01）。
+            // 从「仅头像加载成功时显示」改为始终显示，避免只有昵称时看不到座位号。
+            Text(
+                text = seat.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = scheme.onPrimary,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .background(
+                        scheme.primary.copy(alpha = 0.85f),
+                        androidx.compose.foundation.shape.CircleShape
+                    )
+                    .padding(horizontal = 5.dp, vertical = 2.dp)
+            )
             if (badgeLabel != null) {
                 Icon(
                     imageVector = Icons.Filled.Star,
