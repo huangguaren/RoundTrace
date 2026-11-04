@@ -30,12 +30,20 @@ import com.roundtrace.app.core.model.EventVisibility
 import com.roundtrace.app.core.replay.PlayerTraceCategory
 import com.roundtrace.app.core.replay.PlayerTraceFactLevel
 import com.roundtrace.app.core.replay.PlayerTraceItem
+import com.roundtrace.app.core.ui.identity.SeatIdentity
+import com.roundtrace.app.core.ui.identity.SeatIdentityView
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.PanelShape
 import com.roundtrace.app.core.ui.theme.PillShape
 
 /** 玩家时间线的列表测试标签（仅用于滚动断言，不参与业务逻辑）。 */
 internal const val PLAYER_TRACE_LIST_TAG: String = "player_trace_list"
+
+/** 玩家筛选横滑行的测试标签（用于「10 人局可达最后座位」的滚动断言）。 */
+internal const val PLAYER_TRACE_SEAT_ROW_TAG: String = "player_trace_seat_row"
+
+/** 单个座位 Chip 的测试标签前缀；完整标签为 `前缀+seat`。 */
+internal const val PLAYER_TRACE_SEAT_CHIP_TAG: String = "player_trace_seat_"
 
 /**
  * 玩家行为时间线（F05-01 Phase C）。
@@ -62,11 +70,14 @@ internal fun PlayerTraceSection(
     onSelectCategory: (PlayerTraceCategory?) -> Unit,
     onSelectItem: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    seatLabels: Map<Int, String?> = emptyMap()
+    seatLabels: Map<Int, String?> = emptyMap(),
+    /** 统一座位身份映射（UX-ID-02）；null = 沿用旧纯文字 Chip，保证既有测试零变化。 */
+    seatIdentity: SeatIdentity? = null
 ) {
     Column(modifier = modifier.fillMaxSize()) {
         SectionLabel(R.string.replay_trace_seat_section)
         LazyRow(
+            modifier = Modifier.testTag(PLAYER_TRACE_SEAT_ROW_TAG),
             contentPadding = PaddingValues(horizontal = Dimens.PageHorizontalPadding),
             horizontalArrangement = Arrangement.spacedBy(Dimens.Spacing8)
         ) {
@@ -75,12 +86,22 @@ internal fun PlayerTraceSection(
                 // 有昵称显示昵称，否则显示座位号
                 val label = seatLabels[seat]?.takeIf { it.isNotBlank() }
                     ?: stringResource(R.string.seat_number, seat)
-                TraceChip(
-                    label = label,
-                    selected = selectedSeat == seat,
-                    description = description,
-                    onClick = { onSelectSeat(seat) }
-                )
+                if (seatIdentity != null) {
+                    SeatTraceChip(
+                        display = seatIdentity.display(seat),
+                        selected = selectedSeat == seat,
+                        description = description,
+                        tag = "$PLAYER_TRACE_SEAT_CHIP_TAG$seat",
+                        onClick = { onSelectSeat(seat) }
+                    )
+                } else {
+                    TraceChip(
+                        label = label,
+                        selected = selectedSeat == seat,
+                        description = description,
+                        onClick = { onSelectSeat(seat) }
+                    )
+                }
             }
         }
 
@@ -177,6 +198,43 @@ private fun SectionLabel(resId: Int) {
             end = Dimens.PageHorizontalPadding,
             top = Dimens.Spacing8,
             bottom = Dimens.Spacing4
+        )
+    )
+}
+
+/**
+ * 带头像的玩家筛选 Chip（UX-ID-02）。
+ *
+ * 复用 Phase A 的 [SeatIdentityView]（头像 + 昵称 + 常驻座位号 + 无障碍说明），
+ * 外层仍用 `FilterChip` 保持既有「查看 N 号的记录」内容描述与选中语义。
+ */
+@Composable
+private fun SeatTraceChip(
+    display: com.roundtrace.app.core.ui.identity.SeatDisplay,
+    selected: Boolean,
+    description: String,
+    tag: String,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            SeatIdentityView(
+                display = display,
+                selected = selected,
+                avatarSize = Dimens.Spacing24
+            )
+        },
+        shape = PillShape,
+        modifier = Modifier
+            .heightIn(min = Dimens.MinTouchTarget)
+            .testTag(tag)
+            .semantics { contentDescription = description },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     )
 }

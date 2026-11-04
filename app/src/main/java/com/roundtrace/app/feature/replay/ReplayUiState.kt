@@ -8,6 +8,8 @@ import com.roundtrace.app.core.model.SeatId
 import com.roundtrace.app.core.replay.PlayerTraceCategory
 import com.roundtrace.app.core.replay.PlayerTraceItem
 import com.roundtrace.app.core.replay.TimelineEntry
+import com.roundtrace.app.core.ui.identity.SeatDisplayResolver
+import com.roundtrace.app.core.ui.identity.SeatIdentity
 
 /**
  * 复盘 UiState（TASKS.md T57）。
@@ -38,8 +40,13 @@ data class ReplayUiState(
     /** 用户点了「上帝」但被拒绝 —— UI 弹提示后应清除 */
     val godViewBlocked: Boolean = false,
     val errorMessage: String? = null,
-    /** 座位号 → 昵称映射（PlayerTraceSection 用） */
-    val seatLabels: Map<Int, String?> = emptyMap()
+    /** 座位号 → 昵称映射（兼容既有调用点；由 [seatIdentity] 派生）。 */
+    val seatLabels: Map<Int, String?> = emptyMap(),
+    /**
+     * 同一份 bundle 快照派生的只读座位身份映射（UX-ID-02）。
+     * 昵称、头像、座位号三处共用它，切局不会残留上局资料。
+     */
+    val seatIdentity: SeatIdentity = SeatDisplayResolver.empty(0)
 ) {
 
     /** 是否没有任何可用分析（T58⑤ 空态）。 */

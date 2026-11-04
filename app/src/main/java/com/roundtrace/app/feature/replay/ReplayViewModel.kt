@@ -13,6 +13,7 @@ import com.roundtrace.app.core.model.SeatId
 import com.roundtrace.app.core.replay.PlayerTraceBuilder
 import com.roundtrace.app.core.replay.PlayerTraceCategory
 import com.roundtrace.app.core.replay.TimelineBuilder
+import com.roundtrace.app.core.ui.identity.SeatDisplayResolver
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -136,6 +137,9 @@ class ReplayViewModel(
         val at = GamePosition(requestedOrder ?: latestOrder, questNo = null, proposalNo = null)
         val observer = bundle.config.mySeat
         val playerCount = bundle.config.playerCount
+        // 同一份 bundle 快照只解析一次：头像/昵称/座位号三处共用，
+        // 不做跨快照缓存（B29），切局自然换成新局的资料。
+        val seatIdentity = SeatDisplayResolver.resolve(bundle.participants, playerCount)
         val resolvedTraceSeat = resolveTraceSeat(filters.seat, observer, playerCount)
 
         // 先用公开视角探一次，拿到 canOpenGodView（它不依赖视角本身）
@@ -215,7 +219,11 @@ class ReplayViewModel(
             findings = findings,
             // 时间线同样受可见性约束：公开视角不得出现私人笔记/私有声称
             // （RecordScreen 那条时间线服务「本人记录」，不受影响，故只在此处过滤）
-            timeline = TimelineBuilder.build(events = visibleEvents, upTo = at.occurredOrder),
+            timeline = TimelineBuilder.build(
+                events = visibleEvents,
+                upTo = at.occurredOrder,
+                seatLabel = seatIdentity::formatSeatInSentence
+            ),
             playerTraceSeat = resolvedTraceSeat,
             playerTraceQuestFilter = filters.questNo,
             playerTraceCategoryFilter = filters.category,
@@ -232,14 +240,15 @@ class ReplayViewModel(
                     observerSeat = observer,
                     playerCount = playerCount,
                     questFilter = filters.questNo,
-                    categoryFilter = filters.category?.let { setOf(it) }
+                    categoryFilter = filters.category?.let { setOf(it) },
+                    seatLabel = seatIdentity::formatSeatInSentence
                 )
             },
             canOpenGodView = probe.canOpenGodView,
             godViewBlocked = blocked,
             errorMessage = null,
-            // 座位号 → 昵称映射（PlayerTraceSection 用）
-            seatLabels = bundle.participants.associate { it.seat to it.displayName }
+            seatLabels = seatIdentity.seatLabels,
+            seatIdentity = seatIdentity
         )
     }
 

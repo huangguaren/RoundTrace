@@ -65,7 +65,15 @@ object PlayerTraceBuilder {
         observerSeat: SeatId?,
         playerCount: Int,
         questFilter: Int? = null,
-        categoryFilter: Set<PlayerTraceCategory>? = null
+        categoryFilter: Set<PlayerTraceCategory>? = null,
+        /**
+         * 可选的**结构化座位格式化回调**（UX-ID-02）。
+         * `null` = 逐字沿用旧文案（既有测试与输出零变化）。
+         * 非 null 时只在 `leaderSeat` / `teamSeats` / `speakerSeat` / `targetSeats`
+         * 这些**模型字段**的展示位置调用；任务序号、票数、失败牌数与玩家自由文本
+         * 永远不经过它 —— 这里没有也不允许有 `String.replace` / 正则。
+         */
+        seatLabel: ((SeatId) -> String)? = null
     ): List<PlayerTraceItem> {
         if (playerCount <= 0 || playerSeat !in 1..playerCount) return emptyList()
 
@@ -81,7 +89,7 @@ object PlayerTraceBuilder {
             .filter { !it.retracted }
             .filter { visibleAt(it, atOrder) }
             .sortedWith(compareBy({ it.occurredOrder }, { it.recordedAt }, { it.eventId.raw }))
-            .flatMap { itemsOf(it, playerSeat).asSequence() }
+            .flatMap { itemsOf(it, playerSeat, seatLabel).asSequence() }
             .filter { questFilter == null || it.questNo == questFilter }
             .filter { categoryFilter.isNullOrEmpty() || it.category in categoryFilter }
             .sortedWith(compareBy({ it.occurredOrder }, { it.sourceEventId.raw }))
@@ -100,7 +108,11 @@ object PlayerTraceBuilder {
         else -> event.occurredOrder <= atOrder
     }
 
-    private fun itemsOf(event: MatchEvent, playerSeat: SeatId): List<PlayerTraceItem> = when (event) {
+    private fun itemsOf(
+        event: MatchEvent,
+        playerSeat: SeatId,
+        seatLabel: ((SeatId) -> String)?
+    ): List<PlayerTraceItem> = when (event) {
         is QuestStarted -> if (event.leaderSeat == playerSeat) {
             listOf(
                 item(
@@ -116,7 +128,7 @@ object PlayerTraceBuilder {
         }
 
         is TeamProposed -> buildList {
-            val team = seatList(event.teamSeats)
+            val team = seatList(event.teamSeats, seatLabel)
             val isLeader = event.leaderSeat == playerSeat
             val onTeam = playerSeat in event.teamSeats
             when {
@@ -182,7 +194,7 @@ object PlayerTraceBuilder {
                         category = PlayerTraceCategory.MISSION_MEMBER,
                         relationship = PlayerTraceRelationship.ON_MISSION_TEAM,
                         title = "记录为第 ${event.questNo} 任务队员",
-                        detail = "任务队伍：${seatList(team)} · ${failCountLabel(event)}" +
+                        detail = "任务队伍：${seatList(team, seatLabel)} · ${failCountLabel(event)}" +
                             if (event.verified) " · 已核实" else " · 未核实"
                     )
                 )
@@ -201,8 +213,8 @@ object PlayerTraceBuilder {
                         event = event,
                         category = PlayerTraceCategory.SPEAKER,
                         relationship = PlayerTraceRelationship.SPOKE,
-                        title = speakerTitle(event),
-                        detail = claimDetail(event)
+                        title = speakerTitle(event, seatLabel),
+                        detail = claimDetail(event, seatLabel)
                     )
                 )
             } else if (!isPrivateClaim && playerSeat in event.targetSeats) {
@@ -211,7 +223,7 @@ object PlayerTraceBuilder {
                         event = event,
                         category = PlayerTraceCategory.MENTIONED,
                         relationship = PlayerTraceRelationship.NAMED_BY_OTHER,
-                        title = "被 ${event.speakerSeat} 号在发言中提及",
+                        title = "被 ${seatPhrase(event.speakerSeat, seatLabel)}在发言中提及",
                         detail = phasePrefix(event.questNo) +
                             "发言类型：${claimTypeLabel(event.claimType.name)} · 被提及 ≠ 身份判定"
                     )
@@ -226,7 +238,7 @@ object PlayerTraceBuilder {
                     category = PlayerTraceCategory.PRIVATE_NOTE,
                     relationship = PlayerTraceRelationship.OWN_BELIEF,
                     title = "私人判断：${beliefTypeLabel(event.beliefType.name)}" +
-                        if (event.targetSeats.isEmpty()) "（未记录对象）" else " ${seatList(event.targetSeats)}",
+                        if (event.targetSeats.isEmpty()) "（未记录对象）" else " ${seatList(event.targetSeats, seatLabel)}",
                     detail = "仅本人可见 · 自第 ${event.availableFromOrder} 个事件起可见" +
                         claimTextSuffix(event.text),
                     // B31：定位点是权威可见时刻，不是事件自身被录入的位置
@@ -266,9 +278,19 @@ object PlayerTraceBuilder {
     // 文案（领域层只产出「记录陈述」，不产出身份判定，见 D6 / B11）
     // ————————————————————————————————————————————————————————
 
-    /** 座位列表统一写成「2 / 3 / 4 号」：数字流 + 一次单位，避免出现三个「号」。 */
-    private fun seatList(seats: List<SeatId>): String =
-        if (seats.isEmpty()) "未记录" else seats.joinToString(" / ") + " 号"
+    /**
+     * 座位列表文案。默认「2 / 3 / 4 号」（数字流 + 一次单位），
+     * 有结构化映射时逐人写「小明（1号） / 阿华（2号）」。
+     */
+    private fun seatList(seats: List<SeatId>, seatLabel: ((SeatId) -> String)?): String = when {
+        seats.isEmpty() -> "未记录"
+        seatLabel == null -> seats.joinToString(" / ") + " 号"
+        else -> seats.joinToString(" / ") { seatLabel(it) }
+    }
+
+    /** 单个座位引用。默认「2 号」，有映射时「阿华（2号）」。 */
+    private fun seatPhrase(seat: SeatId, seatLabel: ((SeatId) -> String)?): String =
+        seatLabel?.invoke(seat) ?: "$seat 号"
 
     private fun proposalLabel(questNo: Int?, proposalNo: Int?): String = when {
         questNo == null && proposalNo == null -> "准备阶段"
@@ -293,20 +315,21 @@ object PlayerTraceBuilder {
         else -> "失败牌数：${event.failCount}（不推断是谁出的）"
     }
 
-    private fun speakerTitle(event: PlayerClaimed): String {
+    private fun speakerTitle(event: PlayerClaimed, seatLabel: ((SeatId) -> String)?): String {
+        val who = seatPhrase(event.speakerSeat, seatLabel)
         val role = event.claimedRole
         return if (role != null) {
-            "${event.speakerSeat} 号声称自己是${roleLabel(role.name)}"
+            "${who}声称自己是${roleLabel(role.name)}"
         } else {
-            "${event.speakerSeat} 号发言：${claimTypeLabel(event.claimType.name)}"
+            "${who}发言：${claimTypeLabel(event.claimType.name)}"
         }
     }
 
-    private fun claimDetail(event: PlayerClaimed): String {
+    private fun claimDetail(event: PlayerClaimed, seatLabel: ((SeatId) -> String)?): String {
         val target = if (event.targetSeats.isEmpty()) {
             ""
         } else {
-            " · 提及 ${seatList(event.targetSeats)}"
+            " · 提及 ${seatList(event.targetSeats, seatLabel)}"
         }
         val boundary = if (event.claimedRole != null) {
             " · 声称内容不等于身份事实"

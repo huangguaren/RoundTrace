@@ -90,6 +90,18 @@ class SeatIdentity internal constructor(
     fun formatSeat(seat: SeatId): String = display(seat).label
 
     /**
+     * **句式内**的座位引用：有昵称「阿华（2号）」，无昵称沿用旧文案「2 号」。
+     *
+     * 与 [formatSeat] 的差别只在无昵称场景 —— 既有时间线/轨迹文案写的是「7 号」，
+     * 直接换成「7号」会让既有断言与用户看到的句子无谓变化。UI Chip 仍用
+     * [SeatDisplay.label]（「7号」），两种展示位置互不干扰。
+     */
+    fun formatSeatInSentence(seat: SeatId): String {
+        val seatDisplay = display(seat)
+        return if (seatDisplay.hasName) seatDisplay.label else "$seat 号"
+    }
+
+    /**
      * 座位列表的展示文案（队伍名单 / 目标名单）。
      *
      * **只在模型里的 seat 字段上调用**，绝不用于替换自由文本：

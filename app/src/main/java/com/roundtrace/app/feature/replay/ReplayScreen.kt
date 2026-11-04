@@ -123,7 +123,8 @@ fun ReplayScreen(
                                 showPlayerTrace = false
                             },
                             modifier = Modifier.weight(1f),
-                            seatLabels = state.seatLabels
+                            seatLabels = state.seatLabels,
+                            seatIdentity = state.seatIdentity
                         )
                     }
                 } else {

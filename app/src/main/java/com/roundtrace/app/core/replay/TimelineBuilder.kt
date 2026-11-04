@@ -11,6 +11,7 @@ import com.roundtrace.app.core.model.PlayerClaimed
 import com.roundtrace.app.core.model.PrivateNoteAdded
 import com.roundtrace.app.core.model.ProposalDecision
 import com.roundtrace.app.core.model.QuestStarted
+import com.roundtrace.app.core.model.SeatId
 import com.roundtrace.app.core.model.TeamProposalResolved
 import com.roundtrace.app.core.model.TeamProposed
 import com.roundtrace.app.core.model.TeamVoteChoice
@@ -48,20 +49,34 @@ object TimelineBuilder {
      *        （见 `EventCodec.decode`，RT-003 Step 3），因此这里仍以 `occurredOrder` 命名。
      *        修订条目会回到它在时间线上的原位置，而不是排在末尾。null = 全部。
      */
-    fun build(events: List<MatchEvent>, upTo: Int? = null): List<TimelineEntry> =
+    fun build(
+        events: List<MatchEvent>,
+        upTo: Int? = null,
+        /**
+         * 可选的**结构化座位格式化回调**（UX-ID-02）。
+         * `null` = 逐字沿用旧文案。非 null 时只在 `leaderSeat` / `teamSeats` /
+         * `speakerSeat` / `targetSeats` / `observerSeat` / 刺杀座位的展示位置调用。
+         * 任务序号、票数、失败牌数、以及 `PlayerClaimed.text` 自由文本**不经过**此回调，
+         * 因此「2号很可疑」这类原话永远不会被改写（ID-07）。
+         */
+        seatLabel: ((SeatId) -> String)? = null
+    ): List<TimelineEntry> =
         events.asSequence()
             .filter { !it.retracted }
             .filter { upTo == null || it.occurredOrder <= upTo }
             .sortedWith(compareBy({ it.occurredOrder }, { it.recordedAt }, { it.eventId.raw }))
-            .map { toEntry(it) }
+            .map { toEntry(it, seatLabel) }
             .toList()
 
     /** 单个事件 → 单个条目。 */
-    fun toEntry(event: MatchEvent): TimelineEntry = when (event) {
+    fun toEntry(
+        event: MatchEvent,
+        seatLabel: ((SeatId) -> String)? = null
+    ): TimelineEntry = when (event) {
         is QuestStarted -> TimelineEntry(
             occurredOrder = event.occurredOrder,
             phaseLabel = questPhaseLabel(event.questNo),
-            title = "第 ${event.questNo} 任务开始，队长 ${event.leaderSeat} 号",
+            title = "第 ${event.questNo} 任务开始，队长 ${seatPhrase(event.leaderSeat, seatLabel)}",
             detail = "任务编号 ${event.questNo}",
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
@@ -70,8 +85,8 @@ object TimelineBuilder {
         is TeamProposed -> TimelineEntry(
             occurredOrder = event.occurredOrder,
             phaseLabel = questPhaseLabel(event.questNo),
-            title = "队长 ${event.leaderSeat} 号提出队伍：" +
-                event.teamSeats.joinToString(" / ") { "$it 号" },
+            title = "队长 ${seatPhrase(event.leaderSeat, seatLabel)}提出队伍：" +
+                seatListPhrase(event.teamSeats, seatLabel),
             detail = proposalContext(event.questNo, event.proposalNo),
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
@@ -135,7 +150,8 @@ object TimelineBuilder {
                 title = "任务牌结果：$outcomeLabel" +
                     if (event.verified) "" else "（未核实）",
                 detail = questPhaseLabel(event.questNo) +
-                    " · 队伍 " + (event.teamSeats?.joinToString(" / ") { "$it 号" } ?: UNRECORDED_LABEL) +
+                    " · 队伍 " + (event.teamSeats?.let { seatListPhrase(it, seatLabel) }
+                        ?: UNRECORDED_LABEL) +
                     " · 失败牌 ${event.failCount ?: UNRECORDED_LABEL}",
                 unrecordedFields = unrecorded,
                 sourceEventIds = listOf(event.eventId),
@@ -146,8 +162,8 @@ object TimelineBuilder {
         is PlayerClaimed -> TimelineEntry(
             occurredOrder = event.occurredOrder,
             phaseLabel = questPhaseLabel(event.questNo),
-            title = claimTitle(event),
-            detail = claimDetail(event),
+            title = claimTitle(event, seatLabel),
+            detail = claimDetail(event, seatLabel),
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
         )
@@ -155,7 +171,7 @@ object TimelineBuilder {
         is PrivateNoteAdded -> TimelineEntry(
             occurredOrder = event.occurredOrder,
             phaseLabel = questPhaseLabel(event.questNo),
-            title = "${event.observerSeat} 号的私人笔记：${beliefTypeLabel(event.beliefType.name)}",
+            title = "${seatPhrase(event.observerSeat, seatLabel)}的私人笔记：${beliefTypeLabel(event.beliefType.name)}",
             detail = "自第 ${event.availableFromOrder} 个事件起可见" +
                 if (event.visibility == EventVisibility.PRIVATE_OBSERVER) " · 仅本人可见" else "",
             unrecordedFields = if (event.targetSeats.isEmpty()) listOf("判断对象") else emptyList(),
@@ -172,7 +188,7 @@ object TimelineBuilder {
             TimelineEntry(
                 occurredOrder = event.occurredOrder,
                 phaseLabel = "刺杀阶段",
-                title = "${event.assassinSeat} 号刺杀 ${event.targetSeat} 号：$hitLabel",
+                title = "${seatPhrase(event.assassinSeat, seatLabel)}刺杀 ${seatPhrase(event.targetSeat, seatLabel)}：$hitLabel",
                 detail = "刺杀结算",
                 unrecordedFields = if (event.hitMerlin == null) listOf("是否命中梅林") else emptyList(),
                 sourceEventIds = listOf(event.eventId),
@@ -200,6 +216,18 @@ object TimelineBuilder {
             eventType = event.type
         )
     }
+
+    /** 单个座位引用。默认「2 号」，有结构化映射时「阿华（2号）」。 */
+    private fun seatPhrase(seat: SeatId, seatLabel: ((SeatId) -> String)?): String =
+        seatLabel?.invoke(seat) ?: "$seat 号"
+
+    /** 座位列表。默认逐人「2 号 / 3 号」，有映射时「阿华（2号） / 小林（3号）」。 */
+    private fun seatListPhrase(seats: List<SeatId>, seatLabel: ((SeatId) -> String)?): String =
+        if (seatLabel == null) {
+            seats.joinToString(" / ") { "$it 号" }
+        } else {
+            seats.joinToString(" / ") { seatLabel(it) }
+        }
 
     /** 阶段标签。 */
     private fun questPhaseLabel(questNo: Int?): String =
@@ -238,11 +266,12 @@ object TimelineBuilder {
     }
 
     /** 发言摘要：「声称」前缀用于跳身份，与真实身份在文案上永久区分。 */
-    private fun claimTitle(event: PlayerClaimed): String {
+    private fun claimTitle(event: PlayerClaimed, seatLabel: ((SeatId) -> String)?): String {
+        val who = seatPhrase(event.speakerSeat, seatLabel)
         val role = event.claimedRole
         return when {
-            role != null -> "${event.speakerSeat} 号声称自己是${roleLabel(role.name)}"
-            else -> "${event.speakerSeat} 号发言（${claimTypeLabel(event.claimType.name)}）"
+            role != null -> "${who}声称自己是${roleLabel(role.name)}"
+            else -> "${who}发言（${claimTypeLabel(event.claimType.name)}）"
         }
     }
 
@@ -257,12 +286,12 @@ object TimelineBuilder {
      * `VisibleEventPolicy.forPerspective` 过滤，`RecordScreen` 用的是本人记录不受影响），
      * 本函数不做任何可见性判断，也不能绕过那条唯一出口。
      */
-    private fun claimDetail(event: PlayerClaimed): String {
+    private fun claimDetail(event: PlayerClaimed, seatLabel: ((SeatId) -> String)?): String {
         val meta = buildString {
             append(claimTypeLabel(event.claimType.name))
             if (event.targetSeats.isNotEmpty()) {
                 append(" · 目标 ")
-                append(event.targetSeats.joinToString(" / ") { "$it 号" })
+                append(seatListPhrase(event.targetSeats, seatLabel))
             }
         }
         val spoken = event.text?.trim()
