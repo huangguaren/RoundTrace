@@ -45,6 +45,9 @@ import com.roundtrace.app.core.ui.theme.Dimens
  * @param selected 选中态（供横滑筛选 Chip 复用）
  * @param onClick 非空时整行可点，最小触控高度 [Dimens.MinTouchTarget]
  * @param testTag 测试用标识
+ * @param includeContentDescription 是否在容器上挂载完整无障碍说明。
+ *        被外层已聚合描述的组件（如玩家筛选 Chip）包裹、需要避免重复播报时传 `false`，
+ *        由外层统一提供合并后的说明；默认 `true` 保持独立使用时的语义不变。
  */
 @Composable
 fun SeatIdentityView(
@@ -53,7 +56,8 @@ fun SeatIdentityView(
     selected: Boolean = false,
     onClick: (() -> Unit)? = null,
     avatarSize: androidx.compose.ui.unit.Dp = AVATAR_SIZE,
-    testTag: String? = null
+    testTag: String? = null,
+    includeContentDescription: Boolean = true
 ) {
     val container = if (selected) {
         MaterialTheme.colorScheme.primaryContainer
@@ -117,10 +121,18 @@ fun SeatIdentityView(
         }
     }
 
-    // 刻意不 mergeDescendants：昵称 / 座位号 / 占位首字要能被独立断言，
-    // 同时在容器上挂一条完整的无障碍说明（含未被省略的完整昵称）。
+    // 默认在容器上挂一条完整的无障碍说明（含未被省略的完整昵称）；
+    // 当被外层已聚合描述的组件（如筛选 Chip）包裹、需要避免重复播报时，
+    // 传 includeContentDescription = false，由外层统一提供合并后的说明。
+    // 刻意不 mergeDescendants：昵称 / 座位号 / 占位首字要能被独立断言。
     val semanticsModifier = Modifier
-        .semantics { contentDescription = display.contentDescription }
+        .then(
+            if (includeContentDescription) {
+                Modifier.semantics { contentDescription = display.contentDescription }
+            } else {
+                Modifier
+            }
+        )
         .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
 
     if (onClick != null) {

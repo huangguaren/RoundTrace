@@ -124,19 +124,19 @@ class PlayerTraceSectionTest {
     fun selectedSeatChipReflectsState() {
         show(events(), initialSeat = 2)
 
-        compose.onNodeWithContentDescription("查看 2 号的记录").assertIsSelected()
-        compose.onNodeWithContentDescription("查看 1 号的记录").assertIsNotSelected()
+        compose.onNodeWithContentDescription("查看 2 号的记录", substring = true).assertIsSelected()
+        compose.onNodeWithContentDescription("查看 1 号的记录", substring = true).assertIsNotSelected()
     }
 
     @Test
     fun clickingSeatChipSwitchesSelection() {
         show(events(), initialSeat = 1)
 
-        compose.onNodeWithContentDescription("查看 3 号的记录").performClick()
+        compose.onNodeWithContentDescription("查看 3 号的记录", substring = true).performClick()
         compose.waitForIdle()
 
-        compose.onNodeWithContentDescription("查看 3 号的记录").assertIsSelected()
-        compose.onNodeWithContentDescription("查看 1 号的记录").assertIsNotSelected()
+        compose.onNodeWithContentDescription("查看 3 号的记录", substring = true).assertIsSelected()
+        compose.onNodeWithContentDescription("查看 1 号的记录", substring = true).assertIsNotSelected()
     }
 
     @Test

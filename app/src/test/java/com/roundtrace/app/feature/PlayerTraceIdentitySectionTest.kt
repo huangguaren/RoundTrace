@@ -2,6 +2,7 @@ package com.roundtrace.app.feature
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -119,7 +120,30 @@ class PlayerTraceIdentitySectionTest {
     @Test
     fun selectedSeatStillUsesExistingSelectionSemantics() {
         show()
-        compose.onNodeWithContentDescription("查看 1 号的记录").assertIsSelected()
+        compose.onNodeWithContentDescription("查看 1 号的记录", substring = true).assertIsSelected()
+    }
+
+    /**
+     * Phase C：筛选 Chip 必须把外层「查看 N 号的记录」与内层「阿华，N号座位」两层
+     * contentDescription 合并成**一条**，否则读屏会把同一个座位号先以 Chip 节点播报一次、
+     * 再深入内层把昵称/座位号再播报一次。
+     *
+     * 失败态（修复前）：存在一个独立的内层节点，其 contentDescription 恰好为「阿华，1号座位」，
+     * 而合并后的「查看 1 号的记录，阿华，1号座位」尚不存在 —— 两个断言都会失败。
+     * 修复后：单个 Chip 只产出一条合并描述，内层不再有独立节点。
+     */
+    @Test
+    fun seatChipMergesIdentityIntoSingleContentDescription() {
+        show()
+        // 修复后单个 Chip 只产生一条合并后的无障碍描述（座位动作 + 身份），
+        // 外层与内层不再各挂一条说明。
+        compose.onNodeWithContentDescription("查看 1 号的记录，阿华，1号座位").assertIsDisplayed()
+        compose.onNodeWithContentDescription("查看 2 号的记录，阿华，2号座位").assertIsDisplayed()
+        // 关键断言：不存在独立的「阿华，1号座位」节点（此前会与外层说明重复播报）。
+        compose.onAllNodesWithContentDescription("阿华，1号座位").assertCountEquals(0)
+        // 同名的两个座位仍通过各自的座位号区分，且各自只对应一个合并节点。
+        compose.onAllNodesWithContentDescription("查看 1 号的记录", substring = true).assertCountEquals(1)
+        compose.onAllNodesWithContentDescription("查看 2 号的记录", substring = true).assertCountEquals(1)
     }
 
     @Test
@@ -141,7 +165,7 @@ class PlayerTraceIdentitySectionTest {
                 )
             }
         }
-        compose.onNodeWithContentDescription("查看 4 号的记录").performClick()
+        compose.onNodeWithContentDescription("查看 4 号的记录", substring = true).performClick()
         compose.waitForIdle()
         org.junit.Assert.assertEquals(4, clicked)
     }

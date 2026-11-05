@@ -205,10 +205,16 @@ private fun SectionLabel(resId: Int) {
 }
 
 /**
- * 带头像的玩家筛选 Chip（UX-ID-02）。
+ * 带头像的玩家筛选 Chip（UX-ID-02 / Phase C 修复）。
  *
  * 复用 Phase A 的 [SeatIdentityView]（头像 + 昵称 + 常驻座位号 + 无障碍说明），
- * 外层仍用 `FilterChip` 保持既有「查看 N 号的记录」内容描述与选中语义。
+ * 但把外层「查看 N 号的记录」与内层「阿华，N号座位」两层描述合并成**一条**
+ * `contentDescription`（"查看 N 号的记录，阿华，N号座位"），并用
+ * `mergeDescendants = true` 让内层文字节点被吸收进同一个语义节点——
+ * 否则读屏会先把 Chip 当成一个节点播报一次座位号，再深入内层把昵称/座位号再播报一次。
+ *
+ * 内层 [SeatIdentityView] 因此传 `includeContentDescription = false`，
+ * 避免它再单独挂一条说明与外层重复。
  */
 @Composable
 private fun SeatTraceChip(
@@ -218,25 +224,28 @@ private fun SeatTraceChip(
     tag: String,
     onClick: () -> Unit
 ) {
+    // 外层动作描述 + 内层身份描述合并为单条，座位号只出现一次，杜绝重复播报。
+    val mergedDescription = "$description，${display.contentDescription}"
     FilterChip(
         selected = selected,
         onClick = onClick,
         label = {
             // 横滑列表里 Chip 宽度必须有限：否则超长昵称会把整行撑到不可滚动，
             // 也轮不到 Text 的 ellipsis 生效。昵称在 [SEAT_CHIP_MAX_WIDTH] 内单行省略，
-            // 完整昵称仍由 SeatIdentityView 的 contentDescription 提供。
+            // 完整昵称仍由合并后的 contentDescription 提供（不依赖内层单独说明）。
             SeatIdentityView(
                 display = display,
                 selected = selected,
                 avatarSize = Dimens.Spacing24,
-                modifier = Modifier.widthIn(max = SEAT_CHIP_MAX_WIDTH)
+                modifier = Modifier.widthIn(max = SEAT_CHIP_MAX_WIDTH),
+                includeContentDescription = false
             )
         },
         shape = PillShape,
         modifier = Modifier
             .heightIn(min = Dimens.MinTouchTarget)
             .testTag(tag)
-            .semantics { contentDescription = description },
+            .semantics(mergeDescendants = true) { contentDescription = mergedDescription },
         colors = FilterChipDefaults.filterChipColors(
             selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
             selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
