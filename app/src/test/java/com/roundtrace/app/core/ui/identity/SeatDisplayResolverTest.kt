@@ -222,8 +222,12 @@ class SeatDisplayResolverTest {
         )
         val freeText = "我觉得 2号 很可疑，第 2 任务有 2 张失败牌"
         assertEquals("阿华（2号）", identity.formatSeat(2))
-        // 格式化器是 (SeatId)->String，对自由文本没有任何入口
-        assertEquals(freeText, freeText.let { it })
+        // 格式化器是 (SeatId)->String：只接受 Int，没有任何接受 String 的重载，
+        // 因此自由文本在类型层面就没有被替换的入口（编译期护栏）。
+        val formatter: (Int) -> String = identity::formatSeat
+        assertEquals("阿华（2号）", formatter(2))
+        assertEquals("5号", formatter(5))
+        assertFalse(freeText.contains("阿华（2号）"))
     }
 
     // ————————————————————————— 不承载身份真相 —————————————————————————

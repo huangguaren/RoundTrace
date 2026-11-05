@@ -99,12 +99,10 @@ class ReplayIdentityViewModelTest {
         val questStart = state.timeline.first { it.title.contains("任务开始") }
         assertTrue(questStart.title, questStart.title.contains("（"))
         // 玩家行为卡片里的队伍名单也要带昵称
-        val leaderItem = state.playerTraceItems.firstOrNull {
+        val leaderItem = state.playerTraceItems.first {
             it.detail.contains("提案队伍")
         }
-        if (leaderItem != null) {
-            assertTrue(leaderItem.detail, leaderItem.detail.contains("（"))
-        }
+        assertTrue(leaderItem.detail, leaderItem.detail.contains("（"))
     }
 
     @Test
@@ -122,6 +120,63 @@ class ReplayIdentityViewModelTest {
         // 视角切换不得把角色真值/阵营塞进显示映射
         assertFalse(observerState.seatIdentity.display(1).label.contains("梅林"))
         assertFalse(observerState.seatIdentity.display(1).contentDescription.contains("阵营"))
+    }
+
+    @Test
+    fun switchingAcrossAllThreePerspectivesNeverLeaksPrivateRecords() = runTest {
+        val builder = AvalonScenario.fullMatch()
+        builder.appendRaw(
+            com.roundtrace.app.core.model.PrivateNoteAdded(
+                eventId = com.roundtrace.app.core.model.EventId("identity-private-note"),
+                occurredOrder = 900,
+                recordedAt = 0L,
+                visibility = com.roundtrace.app.core.model.EventVisibility.PRIVATE_OBSERVER,
+                questNo = 3,
+                observerSeat = 1,
+                beliefType = com.roundtrace.app.core.model.BeliefType.SUSPECT,
+                targetSeats = listOf(4),
+                text = "私下记：4号可疑",
+                availableFromOrder = 1
+            )
+        )
+        val repo = FakeMatchRepository(
+            config = AvalonScenario.eightPlayerConfig(),
+            initialEvents = builder.events(),
+            revealedAt = 1_700_000_000_000L
+        )
+        repo.updateParticipants(
+            com.roundtrace.app.core.model.MatchId("fake-match"),
+            listOf(
+                Participant(1, "小明", avatarUri = "content://a/1"),
+                Participant(2, "阿华", avatarUri = "content://a/2"),
+                Participant(3, "阿华", avatarUri = "content://a/3"),
+                Participant(4, "无名", avatarUri = null),
+                Participant(5, "小五", avatarUri = "content://a/5"),
+                Participant(6, "小六", avatarUri = null),
+                Participant(7, "小七", avatarUri = null),
+                Participant(8, "小八", avatarUri = null)
+            )
+        )
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+
+        listOf(
+            Perspective.PUBLIC,
+            Perspective.OBSERVER_AT_TIME,
+            Perspective.GOD_AFTER_REVEAL
+        ).forEach { mode ->
+            vm.onAction(ReplayAction.SelectPerspective(mode))
+            advanceUntilIdle()
+            val state = vm.uiState.value
+            // 身份映射在三种视角下完全一致，且不含角色真相
+            assertEquals("小明（1号）", state.seatIdentity.display(1).label)
+            assertEquals("阿华（2号）", state.seatIdentity.display(2).label)
+            assertFalse(state.seatIdentity.display(1).contentDescription.contains("梅林"))
+            // PUBLIC 时间线绝不出现私人笔记
+            if (mode == Perspective.PUBLIC) {
+                assertTrue(state.timeline.none { it.title.contains("私人笔记") })
+            }
+        }
     }
 
     @Test

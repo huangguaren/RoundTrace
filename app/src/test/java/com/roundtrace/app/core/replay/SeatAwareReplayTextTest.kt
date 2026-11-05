@@ -47,7 +47,13 @@ class SeatAwareReplayTextTest {
         PLAYER_COUNT
     )
 
-    private val label: (Int) -> String = identity::formatSeat
+    // 与 ReplayViewModel 的生产回调**完全一致**（不用 formatSeat）：
+    // 有昵称→「阿华（2号）」，无昵称→沿用句式「2 号」。
+    private val label: (Int) -> String = identity::formatSeatInSentence
+
+    /** 生产口径：没有任何昵称时 ViewModel 传 null 回调，逐字保持基线。 */
+    private val productionLabel: ((Int) -> String)? =
+        if (identity.hasAnyNames) identity::formatSeatInSentence else null
 
     private fun buildTrace(
         playerSeat: Int,
@@ -90,7 +96,7 @@ class SeatAwareReplayTextTest {
         }.events()
 
         val item = buildTrace(1, events).single { it.relationship == PlayerTraceRelationship.PROPOSED_TEAM }
-        assertTrue(item.detail, item.detail.contains("5号 / 6号 / 小七（7号）"))
+        assertTrue(item.detail, item.detail.contains("5 号 / 6 号 / 小七（7号）"))
     }
 
     @Test
@@ -287,6 +293,45 @@ class SeatAwareReplayTextTest {
     }
 
     // ————————————————————————— 主时间线座位引用 —————————————————————————
+
+    @Test
+    fun productionFormatterIsTheOneUsedByTests() {
+        // 钉住 P1：测试与 ReplayViewModel 必须用同一个格式化口径，
+        // 防止「生产改了、测试还在验证另一套」造成文案静默变化。
+        assertEquals("阿华（2号）", productionLabel!!(2))
+        assertEquals("5 号", productionLabel(5))
+        assertFalse(productionLabel(5) == identity.formatSeat(5))
+    }
+
+    @Test
+    fun matchWithoutAnyNicknameKeepsBaselineWordingVerbatim() {
+        val emptyIdentity = SeatDisplayResolver.resolve(emptyList(), PLAYER_COUNT)
+        assertFalse(emptyIdentity.hasAnyNames)
+        val events = MatchBuilder.eightPlayerMerlinMordred().apply {
+            questStarted(1, 1)
+            teamProposed(1, 1, 1, listOf(1, 2, 3))
+        }.events()
+
+        // 生产路径：hasAnyNames=false → seatLabel=null
+        val item = PlayerTraceBuilder.build(
+            events = events,
+            playerSeat = 1,
+            atOrder = AT_END,
+            mode = Perspective.PUBLIC,
+            observerSeat = 1,
+            playerCount = PLAYER_COUNT,
+            seatLabel = if (emptyIdentity.hasAnyNames) {
+                emptyIdentity::formatSeatInSentence
+            } else {
+                null
+            }
+        ).single { it.relationship == PlayerTraceRelationship.PROPOSED_TEAM }
+
+        assertTrue(item.detail, item.detail.contains("提案队伍：1 / 2 / 3 号"))
+        assertFalse(item.detail.contains("1 号 /"))
+        val timeline = TimelineBuilder.build(events, seatLabel = null)
+        assertTrue(timeline.single { it.title.contains("提出队伍") }.title.contains("1 号 / 2 号 / 3 号"))
+    }
 
     @Test
     fun timelineQuestStartedAndMissionUseSameFormatting() {

@@ -79,6 +79,15 @@ class SeatIdentity internal constructor(
 
     val bySeatCount: Int get() = bySeat.size
 
+    /**
+     * 是否**至少有一个座位有昵称**。
+     *
+     * 没有任何昵称时，展示层无需启用结构化格式化：seat 引用本来就是纯数字，
+     * 启用回调只会把基线的「1 / 2 / 3 号」改成「1 号 / 2 号 / 3 号」，
+     * 属于无意义的行为变化。ViewModel 据此传 `null` 回调，逐字保持旧文案。
+     */
+    val hasAnyNames: Boolean get() = bySeat.values.any { it.hasName }
+
     /** 只有解析到的座位才有值；缺失/越界返回 null，不臆造参与者。 */
     operator fun get(seat: SeatId): SeatDisplay? = bySeat[seat]
 

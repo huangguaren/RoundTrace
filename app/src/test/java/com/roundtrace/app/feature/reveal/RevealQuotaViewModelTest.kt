@@ -164,6 +164,25 @@ class RevealQuotaViewModelTest {
     }
 
     @Test
+    fun repeatedRevealClickDoesNotWriteTwice() = runTest {
+        val repo = repo()
+        val vm = viewModel(repo)
+        advanceUntilIdle()
+        vm.onAction(RevealAction.SetSeatRole(1, RoleId.MERLIN))
+        // 连续两次「揭晓」：SAVING 闸门必须在 launch 之前拦住第二次
+        vm.onAction(RevealAction.Reveal)
+        vm.onAction(RevealAction.Reveal)
+        advanceUntilIdle()
+        assertTrue(repo.getBundle(MatchId("fake-match"))!!.revealedAt != null)
+        // 揭晓后 canReveal=false，第三次也不写
+        assertFalse(vm.state.value.canReveal)
+        vm.onAction(RevealAction.Reveal)
+        advanceUntilIdle()
+        // 原子仓储只记录最终状态，重复调用不产生额外角色行
+        assertEquals(8, repo.getBundle(MatchId("fake-match"))!!.roleAssignments.size)
+    }
+
+    @Test
     fun revealRowsExposePlayerIdentity() = runTest {
         val repo = repo()
         repo.updateParticipants(

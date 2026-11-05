@@ -140,6 +140,11 @@ class ReplayViewModel(
         // 同一份 bundle 快照只解析一次：头像/昵称/座位号三处共用，
         // 不做跨快照缓存（B29），切局自然换成新局的资料。
         val seatIdentity = SeatDisplayResolver.resolve(bundle.participants, playerCount)
+        // 没有任何昵称时保持 seatLabel = null：Builder 逐字输出基线文案，
+        // 避免「1 / 2 / 3 号」被无谓改写成「1 号 / 2 号 / 3 号」。
+        // 有昵称才启用结构化格式化（句式内用 formatSeatInSentence）。
+        val seatLabel: ((com.roundtrace.app.core.model.SeatId) -> String)? =
+            if (seatIdentity.hasAnyNames) seatIdentity::formatSeatInSentence else null
         val resolvedTraceSeat = resolveTraceSeat(filters.seat, observer, playerCount)
 
         // 先用公开视角探一次，拿到 canOpenGodView（它不依赖视角本身）
@@ -222,7 +227,7 @@ class ReplayViewModel(
             timeline = TimelineBuilder.build(
                 events = visibleEvents,
                 upTo = at.occurredOrder,
-                seatLabel = seatIdentity::formatSeatInSentence
+                seatLabel = seatLabel
             ),
             playerTraceSeat = resolvedTraceSeat,
             playerTraceQuestFilter = filters.questNo,
@@ -241,7 +246,7 @@ class ReplayViewModel(
                     playerCount = playerCount,
                     questFilter = filters.questNo,
                     categoryFilter = filters.category?.let { setOf(it) },
-                    seatLabel = seatIdentity::formatSeatInSentence
+                    seatLabel = seatLabel
                 )
             },
             canOpenGodView = probe.canOpenGodView,

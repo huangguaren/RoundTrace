@@ -141,8 +141,10 @@ class RevealScreenIdentityTest {
             )
         }
         show(actions, state(rows = rows))
-        // 三个座位都显示忠臣，且行数不丢
-        assertEquals(3, rows.count { it.roleId == RoleId.LOYAL_SERVANT })
+        // 真正验证 UI：三个座位的角色按钮都显示「忠臣」，不是断言传入的 rows
+        val loyalNodes = compose.onAllNodesWithText("忠臣", substring = true)
+            .fetchSemanticsNodes().size
+        assertTrue("三行应都渲染忠臣，实际=$loyalNodes", loyalNodes >= 3)
         compose.onAllNodesWithText("阿华", substring = true)
             .fetchSemanticsNodes().size.let { assertTrue("实际=$it", it >= 2) }
     }

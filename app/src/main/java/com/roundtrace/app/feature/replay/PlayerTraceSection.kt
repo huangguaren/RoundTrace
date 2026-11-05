@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -22,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -220,10 +222,14 @@ private fun SeatTraceChip(
         selected = selected,
         onClick = onClick,
         label = {
+            // 横滑列表里 Chip 宽度必须有限：否则超长昵称会把整行撑到不可滚动，
+            // 也轮不到 Text 的 ellipsis 生效。昵称在 [SEAT_CHIP_MAX_WIDTH] 内单行省略，
+            // 完整昵称仍由 SeatIdentityView 的 contentDescription 提供。
             SeatIdentityView(
                 display = display,
                 selected = selected,
-                avatarSize = Dimens.Spacing24
+                avatarSize = Dimens.Spacing24,
+                modifier = Modifier.widthIn(max = SEAT_CHIP_MAX_WIDTH)
             )
         },
         shape = PillShape,
@@ -338,3 +344,6 @@ private fun PlayerTraceCard(
 
 /** 阿瓦隆标准任务数（1..5）；用于任务筛选条，不从事件里猜最大任务号。 */
 private const val MAX_QUEST = 5
+
+/** 玩家筛选 Chip 的最大宽度：保证 5–10 人横滑列表不被长昵称撑爆。 */
+private val SEAT_CHIP_MAX_WIDTH = 168.dp
