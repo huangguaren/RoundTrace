@@ -5,7 +5,7 @@
 > 需求：`02_Requirements_PRD.md`（UX-ID-01/02/03、REVEAL-Q-01，ID-01～ID-19）
 > 实施：`03_Implementation.md`；基线核查：`01_Acceptance_Baseline.md`
 > 分支：`feat/seat-identity-reveal`（独立 worktree，禁止 `git add -A`，逐提交显式文件清单，无强制推送）
-> **最终 HEAD：`main@dc31640cf4ba4f2811c1cb357367c0492fce7039`**（对应 Actions run 41943994048，success）
+> **最终代码 HEAD：`main@dc31640cf4ba4f2811c1cb357367c0492fce7039`**（对应 Actions run 41943994048，success）；文档提交 `17ee069`（仅文档、不影响构建，叠在 dc31640 之上）
 
 ---
 
