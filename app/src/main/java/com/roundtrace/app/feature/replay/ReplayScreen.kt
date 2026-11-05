@@ -176,7 +176,7 @@ fun ReplayScreen(
                             }
                         }
                         state.findings.forEach { finding ->
-                            item { EvidenceCard(finding = finding) }
+                            item { EvidenceCard(finding = finding, seatIdentity = state.seatIdentity) }
                         }
                         item {
                             Text(

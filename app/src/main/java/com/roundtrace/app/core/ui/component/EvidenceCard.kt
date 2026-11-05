@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.semantics
 import com.roundtrace.app.R
 import com.roundtrace.app.core.model.EvidenceFinding
 import com.roundtrace.app.core.model.EvidenceLevel
+import com.roundtrace.app.core.ui.identity.SeatIdentity
 import com.roundtrace.app.core.ui.theme.CardShape
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.LocalExtendedColors
@@ -48,7 +49,13 @@ import com.roundtrace.app.core.ui.theme.PillShape
 @Composable
 fun EvidenceCard(
     finding: EvidenceFinding,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * 只读座位身份映射（UX-P2-02 / Phase B）。仅用于**格式化 `relatedSeats`** 为「昵称（N号）」；
+     * 绝不影响 [EvidenceFinding.label] / [EvidenceFinding.explanation] 原文（不得正则改写结论/解释/任务编号/票数）。
+     * 默认 null → 沿用基线「N 号」，兼容不传映射的调用点。
+     */
+    seatIdentity: SeatIdentity? = null
 ) {
     var expanded by remember { mutableStateOf(false) }
     val extended = LocalExtendedColors.current
@@ -155,9 +162,12 @@ fun EvidenceCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (finding.relatedSeats.isNotEmpty()) {
+                        // 仅在结构化座位映射可用时显示真实昵称；否则沿用基线「N 号」
+                        val seatsText = seatIdentity
+                            ?.formatSeats(finding.relatedSeats.sorted())
+                            ?: finding.relatedSeats.sorted().joinToString("、") { "$it 号" }
                         Text(
-                            text = stringResource(R.string.evidence_related_seats) + " " +
-                                finding.relatedSeats.sorted().joinToString("、") { "$it 号" },
+                            text = stringResource(R.string.evidence_related_seats) + " " + seatsText,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
