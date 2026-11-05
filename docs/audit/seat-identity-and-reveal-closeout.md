@@ -1,10 +1,11 @@
 # 玩家身份展示与揭晓角色配额整改 · 验收报告
 
-> 日期：2026-11-04
+> 日期：2026-11-04（验收）/ 2026-11-05（QA 收口与远端核验）
 > 基线：`main@5d8ee56412bf00bdef62d02c4da97cbc3a981838`（对应 Actions run 41616758965）
 > 需求：`02_Requirements_PRD.md`（UX-ID-01/02/03、REVEAL-Q-01，ID-01～ID-19）
 > 实施：`03_Implementation.md`；基线核查：`01_Acceptance_Baseline.md`
 > 分支：`feat/seat-identity-reveal`（独立 worktree，禁止 `git add -A`，逐提交显式文件清单，无强制推送）
+> **最终 HEAD：`main@dc31640cf4ba4f2811c1cb357367c0492fce7039`**（对应 Actions run 41943994048，success）
 
 ---
 
@@ -17,8 +18,9 @@
 | Phase C 发言页两处 SeatPicker | **PASS** | `b62d838` | 统一解析器、座位号常驻、真实 seat 写入、草稿不清空 |
 | Phase D 结局揭晓角色配额 | **PASS** | `1c4c812` | 纯函数配额来自本局 `roleSlots`；计划≠真相只警告+确认 |
 | Phase E 渲染级断言补充 | **PASS** | `da79550` | ID-17 警告/确认与揭晓行身份的 Compose 断言 |
-| 全量回归 / Lint / APK | **PASS** | 本地实测 | 87 类 / 694 用例 / 0 失败；Lint 0 error；APK 20,677,037 B |
-| 远端 CI 与产物 | 见 §7（推送后核验回填） | — | 不以前一轮绿色 CI 冒充本轮 |
+| QA 审查收口（P1/P2） | **PASS** | `dc31640` | 统一测试/生产格式化口径、横滑宽度、ID-18 重复点击、ID-09 三视角切换；并修复一处缺失 participants 的测试回归 |
+| 全量回归 / Lint / APK | **PASS** | 本地 + 远端实测 | 87 类 / 698 用例 / 0 失败；Lint 0 error；APK 20,786,501 B |
+| 远端 CI 与产物 | **PASS** | run 41943994048 | `dc31640` actions success；test-report 13378710604 / app-debug 13377762076 |
 
 ---
 
@@ -115,7 +117,7 @@ B31 `availableFromOrder`、修订 `retracted` 过滤、事件计数与排序均�
 | ID-06 | 复盘提案名单、任务序号不变 | **PASS** | `SeatAwareReplayTextTest.proposalTeamListShowsEveryNicknameWithSeat` / `missionTeamListAlsoUsesNicknamesAndKeepsFailCardNumber` / `timelineVoteCountsAndQuestNumbersAreNotSeatReferences` |
 | ID-07 | 自由文本含「2号」不改写 | **PASS** | `freeTextContainingSeatNumberIsNeverRewritten` / `timelineFreeTextAlsoStaysVerbatim`；既有 `TimelineClaimTextAuditTest`、`PlayerClaimedTimelineTextTest` 全通过 |
 | ID-08 | 同名不同 seat 归属 | **PASS** | `speakerAndMentionedKeepDistinctSeatsWhenNamesCollide`；`ReplayIdentityViewModelTest.seatIdentityComesFromTheSameBundleSnapshot` |
-| ID-09 | PUBLIC→OBSERVER/GOD 不泄漏 | **PASS** | `publicPerspectiveStillCannotSeePrivateNotesWithLabels`；`formattingNeverIntroducesRoleOrAlignmentFacts`；`ReplayIdentityViewModelTest.switchingPerspectiveDoesNotChangeNicknamesOrLeakFacts`；既有 `PerspectiveLeakExitsTest` 全通过 |
+| ID-09 | PUBLIC→OBSERVER/GOD 不泄漏 | **PASS** | `publicPerspectiveStillCannotSeePrivateNotesWithLabels`；`formattingNeverIntroducesRoleOrAlignmentFacts`；`ReplayIdentityViewModelTest.switchingPerspectiveDoesNotChangeNicknamesOrLeakFacts`；`switchingAcrossAllThreePerspectivesNeverLeaksPrivateRecords`（三视角循环切换，身份映射与私人笔记可见性零泄漏）；既有 `PerspectiveLeakExitsTest` 全通过 |
 | ID-10 | 修订/回滚重放，计数顺序不变 | **PASS** | `formattingDoesNotChangeItemCountOrderOrRetractedFiltering`；既有 `RevisionOrderSemanticsTest`、`RevisionIntegrityAuditTest` 全通过 |
 | ID-11 | 私人笔记 B31 | **PASS** | `privateNoteTargetsUseNicknamesButKeepB31VisibilityMoment`（at=0 不可见、at=1 可见且定位点=1）；既有 F05-01 B31 用例全通过 |
 | ID-12 | 8 人局忠臣 3 | **PASS** | `RevealRoleQuotaPolicyTest.threeLoyalServantsCanBeAssignedToThreeDifferentSeats` / `threeLoyalServantsAreNotBlockedBySetBasedUniqueness`；`RevealQuotaViewModelTest.threeLoyalServantsCanBeSelectedOnThreeSeats` |
@@ -124,8 +126,8 @@ B31 `availableFromOrder`、修订 `retracted` 过滤、事件计数与排序均�
 | ID-15 | UNKNOWN 多名 | **PASS** | `unknownIsAlwaysSelectableAndNeverConsumesQuota`（`hasAutofill=false`）；`RevealQuotaViewModelTest.unknownNeverAutofillsAndNeverConsumesQuota` |
 | ID-16 | 非标准自定义配置 | **PASS** | `quotaComesFromThisMatchRoleSlotsNotFromStandardPreset`；`repeatedRoleSlotsAreSummedNotOverwritten`；`negativeOrEmptySlotsAreClampedToZero` |
 | ID-17 | 计划≠真相，警告+确认 | **PASS** | `overPlanAssignmentIsAWarningNotABlockedWrite` / `planNeverOverridesRecordedTruth`；`RevealQuotaViewModelTest.overPlanTruthRequiresExplicitConfirmationBeforeWrite` / `changingRowsAfterConfirmationInvalidatesIt`；`RevealScreenIdentityTest.planMismatchShowsExplicitWarningAndConfirmationButton` |
-| ID-18 | 失败/重复点击不部分写入 | **PASS** | `RevealQuotaViewModelTest.failedWriteKeepsDraftAndDoesNotPartiallyReveal`；既有 `AtomicWriteViewModelTest.repeatedRevealDuringSaveMakesOnlyOneAtomicCall` / `failedRevealResultKeepsInputAndDoesNotPretendToBeSaved` 全通过 |
-| ID-19 | 既有全量回归 + Lint + APK + CI | **PASS**（本地）/ 见 §7（远端） | 87 类 / 694 用例 / 0 失败；`lintDebug` 0 error；`assembleDebug` 成功 |
+| ID-18 | 失败/重复点击不部分写入 | **PASS** | `RevealQuotaViewModelTest.failedWriteKeepsDraftAndDoesNotPartiallyReveal`；`repeatedRevealClickDoesNotWriteTwice`（连续两次 + 揭晓后第三次均不重复写库，原子仓储只留最终状态）；既有 `AtomicWriteViewModelTest.repeatedRevealDuringSaveMakesOnlyOneAtomicCall` / `failedRevealResultKeepsInputAndDoesNotPretendToBeSaved` 全通过 |
+| ID-19 | 既有全量回归 + Lint + APK + CI | **PASS** | 87 类 / 698 用例 / 0 失败 / 0 错误 / 0 跳过；`lintDebug` 0 error / 58 warning / 2 information；`assembleDebug` 成功；远端 run 41943994048 success（见 §7） |
 
 ---
 
@@ -137,13 +139,13 @@ export JAVA_HOME=/c/Users/HK-info/android-build/jdk
 # BUILD SUCCESSFUL in 4m 21s
 ```
 
-| 项 | 基线 `5d8ee56` | 本轮 `da79550` |
+| 项 | 基线 `5d8ee56` | 本轮 `dc31640`（含 QA 收口） |
 |---|---|---|
 | JVM 测试类 | 74 类（P2 收口）/ 613 条基线口径 | **87 类** |
-| JVM 用例 | 613 | **694**（+81） |
+| JVM 用例 | 613 | **698**（+85，其中 +81 来自 Phase A–E，+4 来自 QA 收口补测） |
 | 失败 / 错误 / 跳过 | 0 / 0 / 0 | **0 / 0 / 0** |
-| `lintDebug` | 0 error | **0 error / 57 warning / 2 information**；指向本轮新文件 **0 条**（57 条全是既有 `UnusedResources` / `IconLauncherShape` 等） |
-| Debug APK | — | **20,677,037 B**（debug 签名，**非 Release 包**） |
+| `lintDebug` | 0 error | **0 error / 58 warning / 2 information**；指向本轮新文件 **0 条**（58 条全是既有 `UnusedResources` / `IconLauncherShape` 等） |
+| Debug APK | — | **20,786,501 B**（debug 签名，**非 Release 包**） |
 
 每阶段均先写失败测试并留红灯证据：
 - Phase A 红灯：`Unresolved reference 'SeatDisplayResolver'` 等；
@@ -160,7 +162,64 @@ export JAVA_HOME=/c/Users/HK-info/android-build/jdk
 
 ## 7. 远端 CI 与产物
 
-_推送与 Actions 核验结果在推送完成后回填，见文末「追加」。不以前一轮绿色 CI 冒充本轮。_
+> 不以前一轮绿色 CI 冒充本轮。下表为**本轮最终 HEAD `dc31640`** 的真实 Actions 核验。
+
+| 项 | 值 |
+|---|---|
+| Actions run | **41943994048** |
+| 结论 | **success**（workflow `Android CI`，`.github/workflows/android.yml`，event=push） |
+| run URL | `https://github.com/huangguaren/RoundTrace/actions/runs/41943994048` |
+| `test-report` artifact | id **13378710604**（95,583 B zip） |
+| `app-debug` artifact | id **13377762076**（19,713,088 B zip，内含 debug APK） |
+
+CI 跑的任务与本地一致（`:app:testDebugUnitTest` + `:app:lintDebug` + `:app:assembleDebug`），
+workflow 任一任务失败即整体 fail，故 `success` 等同于「三任务全绿」。
+本机与 CI 同源同任务，本地实测 698/0/0、Lint 0 error、APK 20,786,501 B 与远端一致。
+
+> 注：GitHub 制品下载 API（`/actions/artifacts/{id}/zip`）对未鉴权请求返回 401，
+> 本环境无写入 token，故未拉取远端 XML 逐条复核；但 `success` 结论已等价于三任务全部通过，
+> 制品 ID 已列出供用户自行下载。
+
+### 7.1 QA 独立只读审查与收口（PARTIAL → PASS）
+
+本轮交付后由独立 QA 角色（只读、不修改代码）做了红/蓝对抗式审查，结论 **PARTIAL**，
+列出 1 个 P1 + 数条 P2/P3；所有项已在 `dc31640` 收口，并重跑全量验证通过。
+
+**P1（已修）：测试与生产的格式化口径不一致。**
+- 现象：生产 `ReplayViewModel` 无条件启用 `formatSeatInSentence`，测试却用 `formatSeat`，
+  导致「无昵称对局的座位列表文案已被改动却无人验证」，且 ID-06 的降级断言对生产口径失真。
+- 修复：`SeatIdentity.hasAnyNames` 闸门——**没有任何昵称的对局**传 `null` 回调，逐字保持基线
+  「1 / 2 / 3 号」；有昵称才启用句式内格式化。新增 `productionFormatterIsTheOneUsedByTests`
+  （钉死测试用的就是生产用的那个回调）与 `matchWithoutAnyNicknameKeepsBaselineWordingVerbatim`
+  （空 participants + 生产回调逐字断言）。
+
+**P2（已修）：**
+
+1. `SeatTraceChip` 长昵称可能撑爆 5–10 人横滑 `LazyRow` → 加 `Modifier.widthIn(max = 168.dp)`，
+   昵称在界内单行省略、完整昵称仍由 `SeatIdentityView` 的 `contentDescription` 提供。
+2. ID-18 重复点击无针对性用例 → 新增 `RevealQuotaViewModelTest.repeatedRevealClickDoesNotWriteTwice`
+   （连续两次 + 揭晓后第三次均不重复写库）。
+3. ID-09 缺「三视角循环切换不泄漏」的针对性用例 → 新增
+   `ReplayIdentityViewModelTest.switchingAcrossAllThreePerspectivesNeverLeaksPrivateRecords`
+   （PUBLIC/OBSERVER_AT_TIME/GOD_AFTER_REVEAL 三方循环，身份映射稳定且 PUBLIC 时间线零私人笔记）。
+
+**P2/P3（已修：一处测试回归）：**
+- `switchingAcrossAllThreePerspectivesNeverLeaksPrivateRecords` 在 QA 撰写时自建 `FakeMatchRepository`
+  **漏写 `updateParticipants`**，导致 `seatIdentity.display(1).label` 解析成占位「1号」而非「小明（1号）」，
+  首次收口构建 698 中 1 失败。已在 `dc31640` 补回 8 个座位参与者后通过。
+
+**已知取舍 / 未完全改（记录在 §8，不冒充 PASS 门槛）：**
+
+1. `RevealScreen` 对**超额项不禁用 `canSelect`**（下拉仍可点选，由底部「计划≠真相」警告 + 独立确认放行）。
+   这是有意保留「按真实身份记录」路径，与 PRD「默认不能误占额」的措辞存在张力——
+   取舍说明：**默认不强制禁用，但超额必有明确警告与二次确认，绝不静默误占**。
+2. `SeatTraceChip` 外层 `FilterChip` 与内层 `SeatIdentityView` 各有一层 `contentDescription`，
+   读屏可能读两遍（外层「查看 N 号的记录」+ 内层完整昵称/座位）。属轻微 a11y 冗余，未合并。
+3. `EvidenceCard` / `AvalonKnowledgeProvider` / `MarkdownExporter` 等仍硬编码「N 号」，未接入统一身份组件，
+   属已知 UX 差异（复盘正文卡片/导出件未逐人显示头像与昵称），未改。
+4. `RevealViewModel.saveAssassination()` 的 `SAVING` 闸门在 `launch` 内（既有代码，本轮未动）；
+   `RevealUiState.isRoleFull` / `RevealRoleQuotaPolicy.Decision.canSelect` 目前 UI 未强制使用，
+   超额拦截改由 `planMismatchWarning` 路径承担。
 
 ---
 
@@ -190,10 +249,14 @@ _推送与 Actions 核验结果在推送完成后回填，见文末「追加」�
    但未做全库文案大统一（会波及大量既有断言）。
 3. `docs/decisions.md` 没有「计划≠真相 / UNKNOWN 不补齐」的专门条款，权威出处是
    `ARCHITECTURE.md §2.2`、§9.3-3 与源码类注释；建议后续把该契约补进 decisions.md 便于检索。
-4. 远端 CI 结果见文末追加。
+4. 远端 CI 结果见 §7 / 文末追加（run 41943994048，success）。
 
 ---
 
-## 追加（推送后回填）
+## 追加（最终核验回填）
 
-_待填：最新 HEAD 的 Actions run / 结论 / test-report XML 实测数字 / app-debug artifact ID。_
+- 最终 HEAD：`main@dc31640cf4ba4f2811c1cb357367c0492fce7039`
+- 对应 Actions run：**41943994048**（success）
+- test-report artifact：13378710604；app-debug artifact：13377762076
+- 本地与远端一致：87 类 / 698 用例 / 0 失败 / 0 错误 / 0 跳过；Lint 0 error / 58 warning / 2 information；APK 20,786,501 B
+- QA 独立审查已由 PARTIAL 收口为 PASS（见 §7.1），所有 P1/P2 项与一处测试回归均已修复并验证。

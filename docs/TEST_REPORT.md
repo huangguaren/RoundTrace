@@ -3,6 +3,7 @@
 > 生成日期：2026-10-30；**最后更新：2026-11-02（完成 RT-008～RT-014 与队长交互修复后复验）**
 > 覆盖范围：**M0（T01–T10）+ M1（T11–T27）+ M2（T28–T43）+ M3（T44–T49）+ M4（T50–T58）+ M5（T59–T65）**，以及 2026-10-31 起的代码审计轮（RT-001～RT-031）
 > 最新结论见 §13：**433 个 JVM 用例 / 62 个测试类、24 个 API 34 模拟器仪器用例全部通过；`lintDebug` 0 error；`assembleDebug` 成功。** §12 保留阶段 E 的历史基线（356 个用例）。
+> **2026-11-05 追加（玩家身份展示与揭晓角色配额整改 + QA 收口）**：Phase A–E 与 QA 收口后为 **87 个测试类 / 698 个 JVM 用例，0 失败 / 0 错误 / 0 跳过**（较 F05-01 基线 +10 类 / +85 条）；`lintDebug` **0 error / 58 warning / 2 information**（指向本轮新文件 0 条）；`assembleDebug` 成功，Debug APK **20,786,501 B**（debug 签名，非正式 release 包）；远端 Actions run 41943994048 success。证据与验收矩阵见 `docs/audit/seat-identity-and-reveal-closeout.md`。
 > **2026-11-03 追加（P0/P1 收口轮）**：NX-01/02/03/06 落地后 JVM 用例增至 **71 个测试类 / 543 个用例，0 失败**。
 > **2026-11-03 再追加（P2 收口轮）**：无变化编辑保护、影响预览 Compose 断言、规划器代价证据落地后为 **74 个测试类 / 573 个用例，0 失败 / 0 错误 / 0 跳过**；`lintDebug` 0 error（52 warning + 2 information）；`assembleDebug` 通过，Debug APK 20,647,837 B（`versionCode 4 / versionName 0.4.0`，**debug 签名，非正式 release 包**）。
 > **2026-11-03 再追加（v0.5.0 / F05-01 玩家行为时间线）**：新增只读 `PlayerTraceBuilder`、复盘页玩家时间线视图与三路筛选后为 **77 个测试类 / 613 个用例，0 失败 / 0 错误 / 0 跳过**（较 P2 基线 +3 类 / +40 条）；`lintDebug` **0 error**（56 warning + 2 information，指向 F05-01 文件的问题 0 条）；`assembleDebug` 通过，Debug APK **20,643,373 B**（debug 签名，非正式 release 包）。证据见 `docs/audit/f05-01-final.md`。
