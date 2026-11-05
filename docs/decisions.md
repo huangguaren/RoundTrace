@@ -590,6 +590,42 @@ UI 只能通过 `canOpenGodView` 进入（`PerspectiveSwitcher` 禁用态 + `Rep
 
 `QUEST_STARTED`（轮次锚点）、`PLAYER_CLAIMED`（语义事实）、`PRIVATE_NOTE_ADDED`（私人内容）同样只读。
 
+### B38. 「计划 ≠ 真相 / UNKNOWN 不自动补齐」契约索引（2026-11-05 补登记）
+
+> 本条**只做契约索引，不新增裁决、不改代码**。目的：补上
+> `docs/audit/seat-identity-and-reveal-closeout.md` §9(3) 指出的检索缺口 ——
+> 此前 decisions.md 没有这三条的专门条款，导致基线文档引用 B 编号时无处可查。
+> 权威出处仍是 `ARCHITECTURE.md §2.2`、`§9.3-3`、`GameConfig.kt`、`RoleAssignment.kt`
+> 及源码类注释；本条仅把它们与实现位置钉在一起，便于检索与回归时核对。
+
+**三条硬契约**
+
+1. **开局计划 ≠ 真实身份**。`GameConfig.roleSlots` 是**创建时的配置**，不是身份事实。
+   揭晓页逐座位填的是「结局后核实的真实角色」，`UNKNOWN` 是合法的「仍未知」。
+   计划与真实不一致时**允许按真实记录**，绝不反向把真相改写回计划。
+2. **UNKNOWN 不自动补齐、不占配额**。缺失行保持 `UNKNOWN`，`RevealRoleQuotaPolicy` 恒不为其计数，
+   也不因「差一个角色」推断补齐；角色不完整时揭晓保存成功，高级结论区显示「信息不足」（T56⑤）。
+3. **超额不硬禁用，只警告 + 独立二次确认**。
+   `planMismatchWarning` 明确提示差异，`ConfirmPlanMismatch` 只放行**本次**写入；
+   任一行变化后确认立即作废，必须重新确认；
+   全程**不修改 `roleSlots`、不篡改已录入的 `roleAssignments`**，
+   写入由 `revealMatch()` 一次原子提交，失败保留输入（B18/ID-18 护栏不变）。
+
+**实现位置（回归核对清单）**
+
+| 契约 | 代码位置 |
+|---|---|
+| 配额只取本局 `roleSlots`、按 `roleId` 合计、排除当前座位 | `feature/reveal/RevealRoleQuotaPolicy.kt` |
+| 差异精确化（`实际>计划` 已超额即警告；`实际<计划` 仅全录完才报） | 同上 `planMismatch()` |
+| 二次确认闸门（未确认则拦下并给 `errorMessage`） | `RevealViewModel.reveal()`、`RevealUiState.requiresPlanMismatchConfirmation` |
+| 下拉不硬禁用、可选项来自 ruleset 展示顺序 | `RevealScreen.RevealRow`（B27） |
+| 原子写入 | `MatchRepository.revealMatch()`；既有 `AtomicWriteViewModelTest` 全量回归 |
+
+**UX-ID-P2 Phase D（2026-11-05，`d950241`）只调整了上述 UI 的可见性，未改任何契约**：
+计划差异警告卡从列表底部移到顶部首屏可见，并补渲染此前被吞掉的 `errorMessage`
+（未确认时点揭晓原为静默失败）。`UNKNOWN`、二次确认、原子写入三条保持不变，
+`RevealQuotaViewModelTest` 与 `RevealRoleQuotaPolicyTest` 全量通过。
+
 ---
 
 ## F. 待裁决（**未生效**，不得按此改代码）

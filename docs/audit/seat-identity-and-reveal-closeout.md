@@ -260,3 +260,76 @@ workflow 任一任务失败即整体 fail，故 `success` 等同于「三任务�
 - test-report artifact：13378710604；app-debug artifact：13377762076
 - 本地与远端一致：87 类 / 698 用例 / 0 失败 / 0 错误 / 0 跳过；Lint 0 error / 58 warning / 2 information；APK 20,786,501 B
 - QA 独立审查已由 PARTIAL 收口为 PASS（见 §7.1），所有 P1/P2 项与一处测试回归均已修复并验证。
+
+---
+
+## 追加二：UX-ID-P2 质量优化（2026-11-05）
+
+> 本节记录**后继独立一轮** UX-ID-P2，与上文（基线 `5d8ee56` → `dc31640`）不是同一轮。
+> 基线：`main@0df89df`（= 上一轮 QA 收口后的 698 用例口径）。
+> 追加段落只做增量质量优化，不重做已验收功能、不改写历史、不强制推送。
+
+### 目标与本轮解决的既有遗留
+
+UX-ID-P2 专门收口上文「已知限制 / 未解决问题」里的 4 项，并把身份展示补齐到主时间线与证据卡片：
+
+| 上文条目 | 本轮处理 | 阶段 |
+|---|---|---|
+| §8(2)「主时间线卡片未加头像」 | 结构化 `actorSeat` + 行为人头像（仅对明确单一行为人的事件） | Phase A |
+| §8(3) / §9(2)「EvidenceCard 仍硬编码 N 号」 | 证据卡片 `relatedSeats` 显示真实昵称 + 座位号 | Phase B |
+| §7.1(2)「筛选 Chip 双层 contentDescription，读屏可能读两遍…未合并」 | 合并为单条描述 + `mergeDescendants` | Phase C |
+| §8(4)「计划差异警告在底部需滚动…未提供顶部常驻横幅」 | 警告移至列表顶部首屏可见 | Phase D |
+| §9(3)「decisions.md 没有计划≠真相专门条款」 | 追加 B38 契约索引条款 | Phase E |
+
+### 阶段提交（逐阶段独立提交，显式 pathspec，正常 push）
+
+| 阶段 | 提交 | 内容与护栏 |
+|---|---|---|
+| A 主时间线行为人 | `5be657e` | `TimelineEntry.actorSeat` 可选字段；`TimelineBuilder` 只对 `leaderSeat`/`speakerSeat`/`observerSeat`/`assassinSeat` 填值，**汇总票/决议/任务结果/终局/弃局一律 `null`，不臆造行为人**；`TimelineEventCard` 仅在有映射时渲染 28dp 头像。新增 11 条 `TimelineActorSeatTest`（含计数/顺序/文案不变断言） |
+| B 证据卡片昵称 | `f1c3f62` | `EvidenceCard` 只用 `SeatIdentity.formatSeats` 格式化 `relatedSeats`；**`label`/`explanation`/任务编号/票数原样不动，全库无正则替换**。新增 3 条 `EvidenceCardNicknameTest`（含「原文绝不改写」护栏） |
+| C 无障碍与交互 | `2e64e32` | `SeatIdentityView` 增 `includeContentDescription`（默认 `true`，既有调用零变化）；`SeatTraceChip` 合并为单条 `contentDescription`（「查看 N 号的记录，阿华，N号座位」）+ `mergeDescendants=true` 吸收内层文字节点；既有 4 处精确匹配改 `substring` 以适配合并描述。新增 `seatChipMergesIdentityIntoSingleContentDescription` 钉住「无独立内层节点」 |
+| D 揭晓体验 | `d950241` | 计划差异警告卡从底部（8–10 行之后）移到列表顶部；补渲染 `RevealUiState.errorMessage`（此前 ViewModel 已设置、UI 从不渲染，导致未确认时点揭晓静默失败）。新增 `revealBlockedErrorIsShownWhenUnconfirmed`。**保留**：计划≠真相、UNKNOWN 不自动补齐、二次确认只放行本次写入、原子写入闸门 |
+| E 完整验收 | 本段落 + `decisions.md` B38 | 全量单测 + Lint + Debug APK + 远端 Actions 核验 |
+
+**未破坏的硬约束**（本轮全程零改动）：Room v4 schema / `MIGRATION_3_4`、JSON 导入导出 v1/v2、B29（不做分析缓存）、B31（`availableFromOrder` 视角）、B34（结果明确即计数）、B35/B37（历史事件仅 3 类可编辑）、历史编辑事务与撤销链、视角隔离唯一出口 `VisibleEventPolicy.forPerspective`、隐私隔离。NX-05 真机设备验收**继续取消**，不作为门槛。
+
+### 全量验证（实测，对应最终代码 HEAD `d950241`）
+
+```bash
+export JAVA_HOME=/c/Users/HK-info/android-build/jdk
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+# BUILD SUCCESSFUL in 3m 40s（三项任务全绿）
+```
+
+| 项 | 上一轮 `dc31640` | 本轮 `d950241` |
+|---|---|---|
+| JVM 测试类 | 87 | **89** |
+| JVM 用例 | 698 | **714**（+16：A +11 / B +3 / C +1 / D +1） |
+| 失败 / 错误 / 跳过 | 0 / 0 / 0 | **0 / 0 / 0** |
+| `lintDebug` | 0 error / 58 warning / 2 information | **0 error / 58 warning / 2 information**（无新增） |
+| Debug APK | 20,786,501 B | **20,930,020 B**（debug 签名，非 Release 包） |
+
+用例数 698 → 714 与四个阶段新增测试条数逐条对账一致，无既有断言被删除或弱化。
+`Failed to create image decoder with message 'incomplete input'` 为 Robolectric 下头像占位的良性解码日志，非测试失败。
+
+### 远端 CI 与产物（本轮最终 HEAD 实测，非沿用上一轮）
+
+| 项 | 值 |
+|---|---|
+| Actions run | **41990349857**（run #26，`Android CI`，event=push，head_sha=`d950241…`） |
+| 结论 | **completed / success**（workflow 内 `:app:testDebugUnitTest` + `:app:lintDebug` + `:app:assembleDebug`，任一失败即整体 fail） |
+| run URL | `https://github.com/huangguaren/RoundTrace/actions/runs/41990349857` |
+| `test-report` artifact | id **13398481359**（96,125 B） |
+| `app-debug` artifact | id **13397917581**（19,716,246 B zip，内含 debug APK） |
+
+> 制品下载 API 需鉴权（未鉴权 401），本环境无写入 token，未拉取远端 XML 逐条复核；
+> `success` 已等价于 CI 三任务全部通过，制品 ID 列出供自行下载。
+
+### 本轮仍保留的已知限制（不冒充 PASS）
+
+1. `EvidenceCard` 已显示昵称，但复盘**正文**卡片（非证据卡片）与 `MarkdownExporter` 导出件仍未逐人显示头像；
+   本轮只收口了 `relatedSeats` 的座位引用展示。
+2. `REVEALABLE_ROLES` 下拉对超额项仍不硬禁用（有意保留「按真实身份记录」路径），
+   依赖顶部警告 + 独立二次确认，绝不静默误占额。
+3. Compose 断言仍跑在 Robolectric，不覆盖像素裁切、深色模式对比度、超大字号；
+   真机验收 NX-05 继续取消。
