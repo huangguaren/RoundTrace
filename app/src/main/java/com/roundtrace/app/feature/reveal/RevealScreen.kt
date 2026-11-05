@@ -101,17 +101,9 @@ fun RevealScreen(
             }
         }
 
-        // 逐座位填角色
-        items(state.rows.size) { index ->
-            val row = state.rows[index]
-            RevealRow(
-                seat = row.seat,
-                roleId = row.roleId,
-                state = state,
-                onRoleSelected = { onAction(RevealAction.SetSeatRole(row.seat, it)) }
-            )
-        }
-
+        // 计划与真实身份不一致警告：移到列表**顶部**首屏可见，
+        // 用户进入揭晓页或开始填角色前就能看到上下文，不必滚过 5–10 行才发现。
+        // 保留「计划 ≠ 真相」说明 + 独立二次确认按钮（确认只放行本次写入，不改计划/真相）。
         if (state.planMismatchWarning.isNotEmpty()) {
             item {
                 Surface(
@@ -141,6 +133,32 @@ fun RevealScreen(
                         }
                     }
                 }
+            }
+        }
+
+        // 逐座位填角色
+        items(state.rows.size) { index ->
+            val row = state.rows[index]
+            RevealRow(
+                seat = row.seat,
+                roleId = row.roleId,
+                state = state,
+                onRoleSelected = { onAction(RevealAction.SetSeatRole(row.seat, it)) }
+            )
+        }
+
+        // 揭晓被二次确认闸门拦下时的反馈：紧贴「揭晓全部身份」按钮上方，
+        // 用户在此点击才发现被拦，错误信息立即可见（此前仅在 state 里、UI 从不渲染）。
+        if (state.errorMessage != null) {
+            item {
+                Text(
+                    text = state.errorMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Dimens.Spacing4)
+                )
             }
         }
 

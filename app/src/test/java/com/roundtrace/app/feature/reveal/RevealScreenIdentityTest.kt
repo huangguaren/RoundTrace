@@ -52,7 +52,8 @@ class RevealScreenIdentityTest {
     private fun state(
         rows: List<RevealSeatRow> = (1..8).map { RevealSeatRow(it, RoleId.UNKNOWN) },
         warning: String = "",
-        confirmed: Boolean = false
+        confirmed: Boolean = false,
+        errorMessage: String? = null
     ) = RevealUiState(
         isLoading = false,
         playerCount = 8,
@@ -67,7 +68,8 @@ class RevealScreenIdentityTest {
         ),
         seatIdentity = identity(),
         planMismatchWarning = warning,
-        planMismatchConfirmed = confirmed
+        planMismatchConfirmed = confirmed,
+        errorMessage = errorMessage
     )
 
     private fun show(
@@ -113,15 +115,33 @@ class RevealScreenIdentityTest {
             actions,
             state(warning = "真实身份与开局计划不一致（忠臣：计划 3 / 实际 4）。按实际记录保存不会修改计划。")
         )
-        // 警告卡在 8 行揭晓行之后，需滚动进视野
-        compose.onNodeWithTag(REVEAL_LIST_TAG)
-            .performScrollToNode(hasText("按实际身份记录", substring = true))
+        // 警告卡已移到列表**顶部**首屏可见，无需滚动即可看到（钉住 Phase D 的「位置」调整）。
         compose.onNodeWithText("真实身份与开局计划不一致", substring = true).assertIsDisplayed()
         compose.onNodeWithText("按实际身份记录", substring = true).assertIsDisplayed()
 
         compose.onNodeWithText("按实际身份记录", substring = true).performClick()
         compose.waitForIdle()
         assertEquals(listOf(RevealAction.ConfirmPlanMismatch), actions)
+    }
+
+    /**
+     * Phase D：揭晓被「计划与真实身份不一致」二次确认闸门拦下时，
+     * ViewModel 写入的 `errorMessage` 现在必须在界面上渲染出来（此前 UI 从不渲染，等于静默失败）。
+     */
+    @Test
+    fun revealBlockedErrorIsShownWhenUnconfirmed() {
+        val actions = mutableListOf<RevealAction>()
+        show(
+            actions,
+            state(
+                warning = "真实身份与开局计划不一致（忠臣：计划 3 / 实际 4）。",
+                errorMessage = "请先确认「按实际身份记录」后再揭晓"
+            )
+        )
+        // 错误信息紧贴「揭晓全部身份」按钮（列表底部），需滚动进视野后断言可见。
+        compose.onNodeWithTag(REVEAL_LIST_TAG)
+            .performScrollToNode(hasText("请先确认「按实际身份记录」后再揭晓"))
+        compose.onNodeWithText("请先确认「按实际身份记录」后再揭晓").assertIsDisplayed()
     }
 
     @Test
