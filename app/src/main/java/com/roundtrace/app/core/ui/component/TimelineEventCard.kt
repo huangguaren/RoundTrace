@@ -23,8 +23,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import com.roundtrace.app.R
 import com.roundtrace.app.core.replay.TimelineEntry
+import com.roundtrace.app.core.ui.identity.SeatIdentity
+import com.roundtrace.app.core.ui.identity.SeatIdentityView
 import com.roundtrace.app.core.ui.theme.CardShape
 import com.roundtrace.app.core.ui.theme.Dimens
 import com.roundtrace.app.core.ui.theme.LocalExtendedColors
@@ -40,10 +43,16 @@ import com.roundtrace.app.core.ui.theme.LocalExtendedColors
 @Composable
 fun TimelineEventCard(
     entry: TimelineEntry,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** 只读座位身份映射（UX-P2-01 / Phase A）。仅在 `actorSeat` 非空时用于渲染行为人头像，
+     * 默认 null，以兼容记录页等不传映射的调用点。 */
+    seatIdentity: SeatIdentity? = null
 ) {
     var expanded by remember { mutableStateOf(false) }
     val extended = LocalExtendedColors.current
+
+    // 行为人展示文案：有结构化行为人且提供了身份映射时才出现
+    val actorLabel = entry.actorSeat?.let { seatIdentity?.display(it)?.label }
 
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -70,9 +79,12 @@ fun TimelineEventCard(
                 .fillMaxWidth()
                 .heightIn(min = Dimens.MinTouchTarget)
                 .clickable { expanded = !expanded }
-                .semantics {
-                    contentDescription = "${entry.phaseLabel}，${entry.title}"
-                },
+            .semantics {
+                contentDescription = buildString {
+                    append("${entry.phaseLabel}，${entry.title}")
+                    if (actorLabel != null) append("，行为人 $actorLabel")
+                }
+            },
             shape = CardShape,
             color = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -84,6 +96,15 @@ fun TimelineEventCard(
                     .padding(Dimens.CardPadding),
                 verticalArrangement = Arrangement.spacedBy(Dimens.Spacing4)
             ) {
+                // 明确行为人的事件：在卡片顶部展示其头像 + 昵称 + 座位号（UX-P2-01 / Phase A）。
+                // 无单一行为人的汇总/决议类事件不渲染，绝不臆造行为人。
+                if (entry.actorSeat != null && seatIdentity != null) {
+                    SeatIdentityView(
+                        display = seatIdentity.display(entry.actorSeat),
+                        avatarSize = 28.dp,
+                        modifier = Modifier.padding(bottom = Dimens.Spacing4)
+                    )
+                }
                 Text(
                     text = entry.title,
                     style = MaterialTheme.typography.titleMedium,

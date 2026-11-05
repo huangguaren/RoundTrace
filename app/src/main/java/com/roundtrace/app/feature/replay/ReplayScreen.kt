@@ -186,7 +186,7 @@ fun ReplayScreen(
                             )
                         }
                         state.timeline.forEach { entry ->
-                            item { TimelineEventCard(entry = entry) }
+                            item { TimelineEventCard(entry = entry, seatIdentity = state.seatIdentity) }
                         }
                     }
                 }

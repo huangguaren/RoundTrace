@@ -78,6 +78,7 @@ object TimelineBuilder {
             phaseLabel = questPhaseLabel(event.questNo),
             title = "第 ${event.questNo} 任务开始，队长 ${seatPhrase(event.leaderSeat, seatLabel)}",
             detail = "任务编号 ${event.questNo}",
+            actorSeat = event.leaderSeat,
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
         )
@@ -88,6 +89,7 @@ object TimelineBuilder {
             title = "队长 ${seatPhrase(event.leaderSeat, seatLabel)}提出队伍：" +
                 seatListPhrase(event.teamSeats, seatLabel),
             detail = proposalContext(event.questNo, event.proposalNo),
+            actorSeat = event.leaderSeat,
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
         )
@@ -164,6 +166,7 @@ object TimelineBuilder {
             phaseLabel = questPhaseLabel(event.questNo),
             title = claimTitle(event, seatLabel),
             detail = claimDetail(event, seatLabel),
+            actorSeat = event.speakerSeat,
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
         )
@@ -175,6 +178,7 @@ object TimelineBuilder {
             detail = "自第 ${event.availableFromOrder} 个事件起可见" +
                 if (event.visibility == EventVisibility.PRIVATE_OBSERVER) " · 仅本人可见" else "",
             unrecordedFields = if (event.targetSeats.isEmpty()) listOf("判断对象") else emptyList(),
+            actorSeat = event.observerSeat,
             sourceEventIds = listOf(event.eventId),
             eventType = event.type
         )
@@ -191,6 +195,7 @@ object TimelineBuilder {
                 title = "${seatPhrase(event.assassinSeat, seatLabel)}刺杀 ${seatPhrase(event.targetSeat, seatLabel)}：$hitLabel",
                 detail = "刺杀结算",
                 unrecordedFields = if (event.hitMerlin == null) listOf("是否命中梅林") else emptyList(),
+                actorSeat = event.assassinSeat,
                 sourceEventIds = listOf(event.eventId),
                 eventType = event.type
             )
