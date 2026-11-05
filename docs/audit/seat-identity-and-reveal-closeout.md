@@ -333,3 +333,22 @@ export JAVA_HOME=/c/Users/HK-info/android-build/jdk
    依赖顶部警告 + 独立二次确认，绝不静默误占额。
 3. Compose 断言仍跑在 Robolectric，不覆盖像素裁切、深色模式对比度、超大字号；
    真机验收 NX-05 继续取消。
+
+### 最终 HEAD 的远端核验回填（2026-11-05）
+
+**代码交付 HEAD = `d950241`**；其后的 `b036fd2` 及本段回填均为**仅改 `docs/` 的文档提交**，
+不参与 Android 构建。每次 push 都会触发 CI，下表是 E 阶段文档提交 `b036fd2` 的完整核验结果
+（**不以上方代码 HEAD `d950241` 的 run 冒充文档提交的结果**）：
+
+| 项 | 值 |
+|---|---|
+| Actions run | **41991648831**（run #27，`Android CI`，event=push，head_sha=`b036fd2…`） |
+| 结论 | **completed / success**（job `build` 于 `2026-11-05T08:10:11Z` 完成） |
+| 步骤逐项 | Run unit tests ✅ / Run lint ✅ / Build debug APK ✅ / Upload test report ✅ / Upload APK ✅ |
+| run URL | `https://github.com/huangguaren/RoundTrace/actions/runs/41991648831` |
+| `test-report` artifact | id **13397629409**（94,785 B） |
+| `app-debug` artifact | id **13398088433**（19,716,418 B zip，内含 debug APK） |
+
+代码 HEAD `d950241` 的 run **41990349857**（run #26）亦为 success，
+`test-report` 13398481359 / `app-debug` 13397917581 —— 两次 run 均为三任务全绿，
+本地全量验证（`89 类 / 714 用例 / 0 失败`）与之同源同任务。
